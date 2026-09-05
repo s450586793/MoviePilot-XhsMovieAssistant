@@ -21,6 +21,7 @@ class ProbeSettings:
     cdp_url: str
     output_dir: Path
     timeout_seconds: float
+    cdp_token: str | None = None
 
 
 def select_xhs_page(contexts: Iterable[Any]) -> Any | None:
@@ -40,9 +41,14 @@ async def run_probe(
     captured_at: datetime | None = None,
 ) -> dict[str, object]:
     """Connect to external Chromium and persist one mentions response."""
+    connect_options: dict[str, object] = {"timeout": 10_000}
+    if settings.cdp_token:
+        connect_options["headers"] = {
+            "Authorization": f"Bearer {settings.cdp_token}"
+        }
     browser = await browser_type.connect_over_cdp(
         settings.cdp_url,
-        timeout=10_000,
+        **connect_options,
     )
     if not browser.contexts:
         raise RuntimeError("Chromium has no persistent browser context")
@@ -85,6 +91,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=os.getenv("XHS_CDP_URL", "http://127.0.0.1:9222"),
     )
     parser.add_argument(
+        "--cdp-token",
+        default=os.getenv("XHS_CDP_TOKEN") or None,
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(os.getenv("XHS_PROBE_OUTPUT_DIR", "/data/probe")),
@@ -105,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     settings = ProbeSettings(
         cdp_url=args.cdp_url,
+        cdp_token=args.cdp_token,
         output_dir=args.output_dir,
         timeout_seconds=args.timeout,
     )

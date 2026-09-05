@@ -58,9 +58,11 @@ class ProbeBrowserType:
     def __init__(self, page: ProbePage) -> None:
         self.browser = type("Browser", (), {"contexts": [FakeContext([page])]})()
         self.endpoint_url: str | None = None
+        self.connect_options: dict[str, Any] = {}
 
-    async def connect_over_cdp(self, endpoint_url: str, **_: Any) -> Any:
+    async def connect_over_cdp(self, endpoint_url: str, **options: Any) -> Any:
         self.endpoint_url = endpoint_url
+        self.connect_options = options
         return self.browser
 
 
@@ -88,3 +90,33 @@ def test_run_probe_captures_summary_and_raw_evidence(tmp_path: Path) -> None:
     assert result["status"] == "captured"
     assert result["summary"]["message_count"] == 0
     assert Path(result["capture_path"]).is_file()
+
+
+def test_run_probe_authenticates_cdp_with_bearer_token(tmp_path: Path) -> None:
+    browser_type = ProbeBrowserType(ProbePage())
+    settings = cli.ProbeSettings(
+        cdp_url="http://cloakbrowser:8080/api/profiles/xhs/cdp",
+        cdp_token="phase-1-secret",
+        output_dir=tmp_path,
+        timeout_seconds=1,
+    )
+
+    asyncio.run(cli.run_probe(browser_type, settings))
+
+    assert browser_type.connect_options["headers"] == {
+        "Authorization": "Bearer phase-1-secret"
+    }
+
+
+def test_run_probe_omits_authorization_header_without_token(tmp_path: Path) -> None:
+    browser_type = ProbeBrowserType(ProbePage())
+    settings = cli.ProbeSettings(
+        cdp_url="http://127.0.0.1:9222",
+        cdp_token=None,
+        output_dir=tmp_path,
+        timeout_seconds=1,
+    )
+
+    asyncio.run(cli.run_probe(browser_type, settings))
+
+    assert "headers" not in browser_type.connect_options
