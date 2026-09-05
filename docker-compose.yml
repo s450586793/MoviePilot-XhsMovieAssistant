@@ -23,12 +23,14 @@ services:
         - python
         - -c
         - >-
-          import os, urllib.request;
+          import json, os, urllib.request;
           token = os.getenv('XHS_CDP_TOKEN', '');
           headers = {'Authorization': 'Bearer ' + token} if token else {};
-          request = urllib.request.Request(os.environ['XHS_CDP_URL'], headers=headers);
-          urllib.request.urlopen(request, timeout=5).read()
+          status_url = os.environ['XHS_CDP_URL'].removesuffix('/cdp') + '/status';
+          request = urllib.request.Request(status_url, headers=headers);
+          payload = json.load(urllib.request.urlopen(request, timeout=15));
+          assert payload.get('status') == 'running', payload
       interval: 30s
-      timeout: 5s
+      timeout: 20s
       retries: 3
       start_period: 10s
