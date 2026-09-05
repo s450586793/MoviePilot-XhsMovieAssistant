@@ -1,0 +1,41 @@
+{
+  "success": true,
+  "code": 0,
+  "data": {
+    "message_list": [
+      {
+        "id": "mention-1",
+        "type": "mention/comment",
+        "user_info": {
+          "userid": "user-main",
+          "nickname": "Main account"
+        },
+        "comment_info": {
+          "id": "comment-1",
+          "content": "@assistant want to watch"
+        },
+        "item_info": {
+          "id": "note-1",
+          "content": "A movie recommendation",
+          "xsec_token": "xsec-secret"
+        }
+      },
+      {
+        "id": "reply-1",
+        "type": "comment/comment",
+        "user_info": {
+          "userid": "user-other"
+        },
+        "comment_info": {
+          "id": "comment-2",
+          "content": "A reply"
+        },
+        "item_info": {
+          "id": "note-2"
+        }
+      }
+    ],
+    "has_more": false,
+    "cursor": ""
+  }
+}

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xhs-mp-bridge"
+version = "0.1.0"
+description = "Phase 1 probe for Xiaohongshu mention notifications"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright==1.55.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==8.4.1",
+]
+
+[project.scripts]
+xhs-phase1-probe = "xhs_probe.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]
