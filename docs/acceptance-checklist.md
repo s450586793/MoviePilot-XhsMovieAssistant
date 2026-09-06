@@ -177,20 +177,21 @@
 
 ### P-01 mocked/admin 注入登录失效
 
-- [ ] **状态：`PENDING / NOT RUN`**
-- 配置前提：使用 mocked/admin diagnostic endpoint 或等价受控诊断能力注入登录失效；不得通过真实站点触发。`enable_subscription=false`、`reply_enabled=false`、公开回复模板关闭，MP 通知启用。
-- 步骤：注入 `LOGIN_REQUIRED`、`LOGGED_OUT` 或受控的会话过期状态；执行一次受控轮询/诊断读取，并再次请求一次以检验去重。
-- 期望结果：浏览器状态变为 `PAUSED`；停止自动读取和公开回复；MoviePilot 只发送一次暂停通知；不创建订阅或新公开回复。
-- 可记录证据：时间戳、注入的非敏感状态 code、`PAUSED`、`pause_notified=true` 的布尔结果、通知计数 `1`、第二次检查后的通知计数仍为 `1`。
-- 清理/恢复：移除 mock/admin 注入状态；不要故意触发 captcha、`403`、`429` 或 `300012`，也不通过真实站点令 Cookie 失效。
+- [ ] **状态：`BLOCKED / NOT RUN`**
+- 阻塞原因：当前版本没有部署后管理员可调用的登录失效注入入口；现有诊断仅测试 `MediaRequest`/resolver，暂停注入仅存在于自动化测试 fake，不能作为生产验收能力。
+- 配置前提：只有未来目标部署**已验证存在**受控诊断能力，且该能力不会触碰真实站点、不会修改生产 `runtime_state`/`app.db`、不会删除会话凭据时，才可将本项改为 `PENDING`。届时仍须保持 `enable_subscription=false`、`reply_enabled=false`、公开回复模板关闭，并取得该受控窗口授权。
+- 步骤：若且仅若上述能力已部署并验证，注入 `LOGIN_REQUIRED`、`LOGGED_OUT` 或受控会话过期状态；执行一次受控诊断读取，并再次读取以检验通知去重。否则不执行任何现场注入。
+- 期望结果：在已验证受控能力的前提下，浏览器状态为 `PAUSED`，自动读取和公开回复停止，MoviePilot 只发送一次暂停通知，且不创建订阅或新公开回复。
+- 可记录证据：当前阻塞时，仅记录现有 mocked 自动化测试 `test_paused_error_notifies_once_and_resume_allows_polling` 的名称与通过摘要；未来受控执行时才可记录时间戳、非敏感状态 code、`PAUSED`、`pause_notified=true` 和通知计数 `1`（第二次仍为 `1`）。
+- 清理/恢复：不得直接修改 `runtime_state`/`app.db`，不得删除会话凭据、让真实账号登出，或通过真实站点制造 captcha、`403`、`429` 或 `300012`。仅在未来受控能力已验证时，按其自身的无副作用撤销流程清除注入状态。
 
 ### P-02 手动 resume 与 dry-run 恢复
 
 - [ ] **状态：`PENDING / NOT RUN`**
-- 配置前提：P-01 已通过且受控注入已清除；会话已通过正常插件页面确认可用或已在授权窗口重新扫码；`enable_subscription=false`、`reply_enabled=false`。
-- 步骤：在插件页面点击“恢复轮询”，仅处理一条已准备的安全 dry-run mention。
+- 配置前提：本项不假定 P-01 的生产注入已经运行。仅当未来 P-01 的安全注入能力已验证并实际执行，或真实账号发生**自然**登录失效且用户已单独授权该恢复窗口时，才可执行；会话须已通过正常插件页面确认可用或在授权窗口重新扫码。始终保持 `enable_subscription=false`、`reply_enabled=false`。
+- 步骤：在插件页面点击“恢复轮询”，仅处理一条已准备的安全 dry-run mention。不得为了本项让账号登出、删除会话凭据、改写数据库，或触发任何平台风险。
 - 期望结果：暂停被清除，下一次轮询成功处理为 `DRY_RUN_MATCHED` 或 `NEED_CONFIRMATION`；不自动重试旧风险，不创建订阅或公开回复。
-- 可记录证据：时间戳、resume 前后浏览器状态 code、脱敏 request ID、最终 dry-run 状态、订阅/回复计数均无增量。
+- 可记录证据：实际获授权执行时记录时间戳、resume 前后浏览器状态 code、脱敏 request ID、最终 dry-run 状态及订阅/回复计数无增量；无安全注入且未发生自然登录失效时保持 `NOT RUN`。
 - 清理/恢复：关闭轮询并再次核对安全基线；若恢复失败，记录错误类型和用户可执行恢复步骤，不循环重试。
 
 ## 5. 结束检查与签核
