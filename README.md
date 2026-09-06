@@ -1,10 +1,12 @@
 # 小红书影视助手
 
-当前仓库只实现 Phase 1 可行性探针：
+当前仓库已实现 Phase 1 至 Phase 3：
 
 - 复用 DSM 上已有的 CloakBrowser Manager，不再打包 Chromium。
 - 由人工完成小红书小号登录和验证码。
 - 捕获一次“评论和 @”接口响应并输出脱敏字段摘要。
+- 只接受配置的稳定主号 `user_id`，其他用户请求不入库。
+- 使用 SQLite 保存请求，并按 mention 和规范化请求双重去重。
 - 不调用 AI，不连接 MoviePilot，不创建订阅，不回复小红书。
 
 ## 准备 CloakBrowser Profile
@@ -56,6 +58,26 @@ sudo docker compose exec xhs-mp-bridge xhs-phase1-probe
 
 若结果为 `timeout`，先检查远程 Chromium 是否仍保持登录，再执行一次探针。不要连续高频重试。
 
+## 导入 SQLite 并验证去重
+
+在 `.env` 中配置主号的稳定 ID：
+
+```text
+AUTHORIZED_XHS_USER_ID=replace-with-main-account-user-id
+XHS_DATABASE_PATH=/data/app.db
+```
+
+将一次 Phase 1 捕获结果离线导入 SQLite：
+
+```bash
+sudo docker compose exec xhs-mp-bridge \
+  xhs-phase3-import /data/probe/mentions-YYYYMMDDTHHMMSSZ.json
+```
+
+命令只输出创建、重复、忽略和无效记录的数量，不输出用户 ID、评论或 token。对同一捕获文件再次执行时，记录应计入 `duplicate_count`，数据库仍只保留一条请求。
+
+SQLite 表为 `xhs_requests`，数据库文件和原始捕获文件都位于已持久化的 `data/app/` 目录。数据库不会保存 Cookie、CDP Token 或 `xsec_token`。
+
 ## 验证与停止
 
 ```bash
@@ -71,3 +93,10 @@ Phase 1 通过标准：
 2. 重启 CB Profile 后登录状态仍保留。
 3. 小号网页能看到主号发出的新 @。
 4. 探针能捕获 mentions API 响应，且没有验证码、HTTP 403/429 或异常退出。
+
+Phase 3 通过标准：
+
+1. 只有 `AUTHORIZED_XHS_USER_ID` 对应账号的通知会生成请求。
+2. 同一 `mention_id` 重复导入不会新增记录。
+3. 同一笔记、发送者和规范化评论即使使用新的 mention，也不会新增记录。
+4. `app.db` 权限为 `0600`，且不包含 Cookie、CDP Token 或 `xsec_token`。

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "xhs-mp-bridge"
 version = "0.1.0"
-description = "Phase 1 probe for Xiaohongshu mention notifications"
+description = "Xiaohongshu mention capture and idempotent request storage"
 requires-python = ">=3.11"
 dependencies = [
   "playwright==1.55.0",
@@ -18,6 +18,7 @@ test = [
 
 [project.scripts]
 xhs-phase1-probe = "xhs_probe.cli:main"
+xhs-phase3-import = "xhs_probe.phase3_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
