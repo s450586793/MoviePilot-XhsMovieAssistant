@@ -95,6 +95,20 @@ def test_match_normalizes_moviepilot_media_type_enum(gateway: MoviePilotGateway)
     assert decision.reason_code == "MATCHED"
 
 
+def test_single_exact_title_type_match_ignores_unrelated_same_type_result(
+    gateway: MoviePilotGateway,
+) -> None:
+    gateway.search_results.extend(
+        [media("唯一标题", 2014), media("无关标题", 2024)]
+    )
+
+    decision = gateway.match(resolution(title="唯一标题", year=None))
+
+    assert decision.reason_code == "MATCHED"
+    assert decision.match is not None
+    assert decision.match.title == "唯一标题"
+
+
 class FakeMetaInfo:
     def __init__(self, title: str) -> None:
         self.title = title
@@ -125,11 +139,15 @@ def subscription_gateway(monkeypatch: pytest.MonkeyPatch) -> tuple[MoviePilotGat
     class FakeMediaServerChain:
         def media_exists(self, media_info: object) -> bool:
             state.media_exists_calls.append(media_info)
+            if isinstance(state.in_library, Exception):
+                raise state.in_library
             return state.in_library
 
     class FakeSubscribeChain:
         def exists(self, media_info: object, meta: FakeMetaInfo) -> bool:
             state.subscribe_exists_calls.append((media_info, meta))
+            if isinstance(state.already_subscribed, Exception):
+                raise state.already_subscribed
             return state.already_subscribed
 
         def add(self, **kwargs: object) -> tuple[int | None, str]:
@@ -240,6 +258,30 @@ def test_submit_maps_native_add_failure_without_exposing_exception_text(
 ) -> None:
     gateway, state = subscription_gateway
     state.add_result = RuntimeError("https://provider.invalid?api_key=secret")
+
+    outcome = gateway.submit(matched_decision(), enable_subscription=True)
+
+    assert outcome.status is RequestStatus.FAILED
+    assert "secret" not in repr(outcome)
+
+
+def test_submit_maps_media_library_check_failure_without_exposing_exception_text(
+    subscription_gateway: tuple[MoviePilotGateway, SimpleNamespace],
+) -> None:
+    gateway, state = subscription_gateway
+    state.in_library = RuntimeError("https://provider.invalid?api_key=secret")
+
+    outcome = gateway.submit(matched_decision(), enable_subscription=True)
+
+    assert outcome.status is RequestStatus.FAILED
+    assert "secret" not in repr(outcome)
+
+
+def test_submit_maps_existing_subscription_check_failure_without_exposing_exception_text(
+    subscription_gateway: tuple[MoviePilotGateway, SimpleNamespace],
+) -> None:
+    gateway, state = subscription_gateway
+    state.already_subscribed = RuntimeError("https://provider.invalid?api_key=secret")
 
     outcome = gateway.submit(matched_decision(), enable_subscription=True)
 

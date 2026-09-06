@@ -36,6 +36,7 @@ class _Candidate:
     match: MediaMatch
     score: float
     exact_title: bool
+    exact_type: bool
 
 
 def _load_moviepilot_runtime() -> Any:
@@ -112,16 +113,20 @@ class MoviePilotGateway:
             )
         )
         top = candidates[0]
+        exact_title_type_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.exact_title and candidate.exact_type
+        ]
         if (
-            len(candidates) == 1
-            and resolution.year is None
-            and top.exact_title
-            and top.match.media_type == resolution.media_type
+            resolution.year is None and len(exact_title_type_candidates) == 1
         ):
+            top = exact_title_type_candidates[0]
             top = _Candidate(
                 top.media_info,
                 top.match.model_copy(update={"score": 0.8}),
                 0.8,
+                True,
                 True,
             )
 
@@ -144,25 +149,25 @@ class MoviePilotGateway:
         if decision.match is None or decision.media_info is None:
             raise ValueError("match decision requires match and media_info")
 
-        runtime = _load_moviepilot_runtime()
-        match = decision.match
-        meta = runtime.MetaInfo(match.title)
-        if match.year is not None:
-            meta.year = str(match.year)
-        media_type = runtime.MediaType.from_agent(match.media_type)
-        meta.type = media_type
-        if match.season is not None:
-            meta.begin_season = match.season
-
-        if runtime.MediaServerChain().media_exists(decision.media_info):
-            return SubscriptionOutcome(status=RequestStatus.ALREADY_IN_LIBRARY)
-        subscribe_chain = runtime.SubscribeChain()
-        if subscribe_chain.exists(decision.media_info, meta):
-            return SubscriptionOutcome(status=RequestStatus.ALREADY_SUBSCRIBED)
-        if not enable_subscription:
-            return SubscriptionOutcome(status=RequestStatus.DRY_RUN_MATCHED)
-
         try:
+            runtime = _load_moviepilot_runtime()
+            match = decision.match
+            meta = runtime.MetaInfo(match.title)
+            if match.year is not None:
+                meta.year = str(match.year)
+            media_type = runtime.MediaType.from_agent(match.media_type)
+            meta.type = media_type
+            if match.season is not None:
+                meta.begin_season = match.season
+
+            if runtime.MediaServerChain().media_exists(decision.media_info):
+                return SubscriptionOutcome(status=RequestStatus.ALREADY_IN_LIBRARY)
+            subscribe_chain = runtime.SubscribeChain()
+            if subscribe_chain.exists(decision.media_info, meta):
+                return SubscriptionOutcome(status=RequestStatus.ALREADY_SUBSCRIBED)
+            if not enable_subscription:
+                return SubscriptionOutcome(status=RequestStatus.DRY_RUN_MATCHED)
+
             subscription_id, _message = subscribe_chain.add(
                 title=match.title,
                 year=str(match.year or ""),
@@ -232,5 +237,13 @@ class MoviePilotGateway:
                 tmdb_id=_optional_int(_value(media_info, "tmdb_id", "tmdbid")),
                 score=score,
             )
-            candidates.append(_Candidate(media_info, match, score, normalized_title_match))
+            candidates.append(
+                _Candidate(
+                    media_info,
+                    match,
+                    score,
+                    normalized_title_match,
+                    candidate_type == resolution.media_type,
+                )
+            )
         return candidates
