@@ -7,6 +7,9 @@ from typing import Any
 
 import pytest
 import xhsmovieassistant as entrypoint
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.testclient import TestClient
 
 
 def _plugin(tmp_path: Path) -> Any:
@@ -25,6 +28,29 @@ def _components(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(content, list):
             found.extend(_components(content))
     return found
+
+
+def _moviepilot_route_client(plugin: Any, path: str) -> TestClient:
+    """Register one plugin route with MoviePilot's bearer dependency contract."""
+    route = next(route for route in plugin.get_api() if route["path"] == path)
+    bearer = HTTPBearer(auto_error=False)
+
+    def verify_token(
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    ) -> None:
+        if credentials is None or credentials.credentials != "browser-jwt":
+            raise HTTPException(status_code=401, detail="invalid browser session")
+
+    dependencies = [Depends(verify_token)] if route["auth"] == "bear" else []
+    app = FastAPI()
+    app.add_api_route(
+        path,
+        route["endpoint"],
+        methods=route["methods"],
+        dependencies=dependencies,
+        response_model=None,
+    )
+    return TestClient(app)
 
 
 class _RuntimeRepository:
@@ -144,7 +170,35 @@ def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
         "/test/notification",
     ]
     assert all(route["methods"] == ["POST"] for route in routes)
-    assert all(route["auth"] == "apikey" for route in routes)
+    assert all(route["auth"] == "bear" for route in routes)
+
+
+def test_moviepilot_browser_jwt_reaches_bearer_authenticated_endpoint(tmp_path):
+    plugin = _plugin(tmp_path)
+    notifications = []
+    plugin.post_message = lambda **kwargs: notifications.append(kwargs)
+    client = _moviepilot_route_client(plugin, "/test/notification")
+
+    response = client.post(
+        "/test/notification",
+        headers={"Authorization": "Bearer browser-jwt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert len(notifications) == 1
+
+
+def test_moviepilot_bearer_dependency_rejects_before_endpoint(tmp_path):
+    plugin = _plugin(tmp_path)
+    notifications = []
+    plugin.post_message = lambda **kwargs: notifications.append(kwargs)
+    client = _moviepilot_route_client(plugin, "/test/notification")
+
+    response = client.post("/test/notification")
+
+    assert response.status_code == 401
+    assert notifications == []
 
 
 def test_direct_endpoint_auth_fails_closed_without_calling_runtime(tmp_path):

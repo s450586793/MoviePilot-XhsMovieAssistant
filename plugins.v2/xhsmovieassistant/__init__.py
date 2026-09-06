@@ -219,7 +219,7 @@ class XhsMovieAssistant(_PluginBase):
                 "path": path,
                 "endpoint": endpoint,
                 "methods": ["POST"],
-                "auth": "apikey",
+                "auth": "bear",
                 "summary": summary,
                 "description": summary,
             }
@@ -727,6 +727,12 @@ class XhsMovieAssistant(_PluginBase):
         apikey: str | None,
         body: Mapping[str, Any] | None = None,
     ) -> bool:
+        if (
+            Request is not Any
+            and isinstance(request, Request)
+            and getattr(request, "scope", {}).get("route") is not None
+        ):
+            return True
         expected = str(getattr(settings, "API_TOKEN", "") or "").strip()
         actual = _extract_credential(request, apikey, body)
         matches = hmac.compare_digest(actual, expected)
