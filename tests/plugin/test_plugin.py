@@ -239,6 +239,28 @@ def test_poll_once_is_non_blocking_and_rejects_reentry(tmp_path):
     plugin._worker.join(timeout=0.5)
 
 
+def test_management_action_does_not_overlap_active_poll(tmp_path):
+    plugin = _plugin(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def block():
+        entered.set()
+        release.wait(timeout=1)
+
+    plugin._enabled = True
+    plugin._service = SimpleNamespace(poll_once=block)
+
+    assert plugin.poll_once() is True
+    assert entered.wait(timeout=0.5)
+    response = plugin.test_notification(apikey="test-api-token")
+    release.set()
+    plugin._worker.join(timeout=0.5)
+
+    assert response.success is False
+    assert not hasattr(plugin, "_posted_message")
+
+
 def test_stop_service_uses_bounded_join_and_closes_active_context(tmp_path):
     plugin = _plugin(tmp_path)
     calls = []

@@ -311,6 +311,31 @@ class RequestRepository:
             updated = _require_row(connection, request_id)
         return _request_from_row(updated)
 
+    def retry_interrupted(
+        self, request_id: int, *, now: datetime | None = None
+    ) -> StoredRequest:
+        """Return generation-cancelled in-progress work to its retryable state."""
+        with self._connect() as connection:
+            row = _require_row(connection, request_id)
+            current = RequestStatus(row["status"])
+            if current is RequestStatus.NEW:
+                return _request_from_row(row)
+            if current not in RECOVERABLE_STATUSES:
+                return _request_from_row(row)
+            if not _compare_and_update(
+                connection,
+                request_id,
+                current,
+                {
+                    "status": RequestStatus.NEW.value,
+                    "error": None,
+                    "attempt_count": row["attempt_count"] + 1,
+                    "updated_at": _format_datetime(now or _utc_now()),
+                },
+            ):
+                return _request_from_row(_require_row(connection, request_id))
+            return _request_from_row(_require_row(connection, request_id))
+
     def mark_reply(
         self,
         request_id: int,

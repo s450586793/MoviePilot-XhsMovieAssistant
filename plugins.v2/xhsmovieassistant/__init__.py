@@ -8,6 +8,7 @@ import re
 import threading
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,21 @@ _SENSITIVE_KEYS = frozenset(
 )
 
 
+def _serialized_management(operation: Callable[..., Any]) -> Callable[..., Any]:
+    """Run one synchronous endpoint without overlapping background work."""
+
+    @wraps(operation)
+    def serialized(self: "XhsMovieAssistant", *args: Any, **kwargs: Any) -> Any:
+        if not self._activity_lock.acquire(blocking=False):
+            return self._failure("Another action is running")
+        try:
+            return operation(self, *args, **kwargs)
+        finally:
+            self._activity_lock.release()
+
+    return serialized
+
+
 class XhsMovieAssistant(_PluginBase):
     """Bind the domain services to MoviePilot's V2 plugin lifecycle."""
 
@@ -114,6 +130,7 @@ class XhsMovieAssistant(_PluginBase):
         self._service: AssistantService | None = None
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
+        self._activity_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._generation = 0
         self._cached_status: dict[str, Any] = {
@@ -356,6 +373,7 @@ class XhsMovieAssistant(_PluginBase):
             message="Chromium installation started" if started else "Another action is running",
         )
 
+    @_serialized_management
     def start_login(
         self, request: Request = None, apikey: str | None = None
     ) -> Any:
@@ -372,6 +390,7 @@ class XhsMovieAssistant(_PluginBase):
         except Exception:
             return self._failure("Login QR code could not be generated")
 
+    @_serialized_management
     def logout(self, request: Request = None, apikey: str | None = None) -> Any:
         """Explicitly clear the persistent browser session."""
         if not self._authorized(request, apikey):
@@ -384,6 +403,7 @@ class XhsMovieAssistant(_PluginBase):
         except Exception:
             return self._failure("Logout failed")
 
+    @_serialized_management
     def resume(self, request: Request = None, apikey: str | None = None) -> Any:
         """Clear the durable pause state through the service boundary."""
         if not self._authorized(request, apikey):
@@ -410,6 +430,7 @@ class XhsMovieAssistant(_PluginBase):
             message="Polling started" if started else "Polling is unavailable or already running",
         )
 
+    @_serialized_management
     def reprocess(
         self,
         request_id: int,
@@ -421,6 +442,7 @@ class XhsMovieAssistant(_PluginBase):
             return self._unauthorized()
         return self._service_action("reprocess", request_id)
 
+    @_serialized_management
     def ignore(
         self,
         request_id: int,
@@ -432,6 +454,7 @@ class XhsMovieAssistant(_PluginBase):
             return self._unauthorized()
         return self._service_action("ignore", request_id)
 
+    @_serialized_management
     def manual_resolve(
         self,
         request_id: int,
@@ -456,6 +479,7 @@ class XhsMovieAssistant(_PluginBase):
         except Exception:
             return self._failure("Request could not be manually resolved")
 
+    @_serialized_management
     def test_ai(
         self,
         body: dict[str, Any] | None = None,
@@ -479,6 +503,7 @@ class XhsMovieAssistant(_PluginBase):
         except Exception:
             return self._failure("AI test failed")
 
+    @_serialized_management
     def test_moviepilot(
         self,
         body: dict[str, Any] | None = None,
@@ -501,6 +526,7 @@ class XhsMovieAssistant(_PluginBase):
         except Exception:
             return self._failure("MoviePilot test failed")
 
+    @_serialized_management
     def test_notification(
         self, request: Request = None, apikey: str | None = None
     ) -> Any:
@@ -591,6 +617,9 @@ class XhsMovieAssistant(_PluginBase):
             replies_enabled=self._reply_enabled,
             notifications_enabled=self._notifications_enabled,
             templates=ReplyTemplates(self._template_values),
+            is_cancelled=lambda: (
+                stop_event.is_set() or generation != self._generation
+            ),
         )
         with self._worker_lock:
             if (
@@ -622,6 +651,8 @@ class XhsMovieAssistant(_PluginBase):
             self._worker = None
             if self._stop_event.is_set():
                 return False
+            if not self._activity_lock.acquire(blocking=False):
+                return False
             generation = self._generation
             stop_event = self._stop_event
 
@@ -647,6 +678,7 @@ class XhsMovieAssistant(_PluginBase):
                         and self._cached_status.get("activity") != "FAILED"
                     ):
                         self._cached_status["activity"] = "IDLE"
+                    self._activity_lock.release()
 
             worker = threading.Thread(
                 target=run,
@@ -654,7 +686,12 @@ class XhsMovieAssistant(_PluginBase):
                 daemon=True,
             )
             self._worker = worker
-            worker.start()
+            try:
+                worker.start()
+            except Exception:
+                self._worker = None
+                self._activity_lock.release()
+                raise
             return True
 
     def _has_live_worker(self) -> bool:

@@ -69,6 +69,7 @@ class AssistantService:
         replies_enabled: bool = False,
         notifications_enabled: bool = True,
         templates: ReplyTemplates | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         if (
             isinstance(confidence_threshold, bool)
@@ -92,6 +93,7 @@ class AssistantService:
         self.replies_enabled = replies_enabled
         self.notifications_enabled = notifications_enabled
         self.templates = templates or ReplyTemplates()
+        self._is_cancelled = is_cancelled or (lambda: False)
         self._consecutive_poll_failures = 0
 
     def poll_once(self) -> list[ProcessingResult]:
@@ -99,7 +101,10 @@ class AssistantService:
         if self.repository.get_runtime_state().browser_state is BrowserState.PAUSED:
             return []
         try:
+            self._ensure_active()
             mentions = self.xhs.fetch_mentions(limit=20)
+        except _ServiceCancelled:
+            return []
         except XhsPausedError as error:
             self._pause(error.code)
             return []
@@ -116,6 +121,8 @@ class AssistantService:
                 result = self.process_request(mention)
             except IdempotencyConflict:
                 continue
+            except _ServiceCancelled:
+                break
             if result is not None:
                 results.append(result)
             if self.repository.get_runtime_state().browser_state is BrowserState.PAUSED:
@@ -145,7 +152,6 @@ class AssistantService:
         if not saved.created:
             recovered = (
                 saved.request.status is RequestStatus.NEW
-                and saved.request.attempt_count > 0
                 and saved.request.mention_id == mention.mention_id
             )
             if not recovered:
@@ -216,7 +222,10 @@ class AssistantService:
         self, request_id: int, mention: TransientMention
     ) -> ProcessingResult:
         try:
+            self._ensure_active(request_id)
             detail = self.xhs.fetch_note(mention)
+        except _ServiceCancelled:
+            raise
         except XhsPausedError as error:
             result = self._fail(request_id, error.code)
             self._pause(error.code)
@@ -251,7 +260,10 @@ class AssistantService:
         )
         self.repository.transition(request_id, RequestStatus.RESOLVING)
         try:
+            self._ensure_active(request_id)
             resolution = self.resolver.resolve(media_request)
+        except _ServiceCancelled:
+            raise
         except Exception:
             return self._complete(
                 request_id,
@@ -279,7 +291,10 @@ class AssistantService:
             )
 
         try:
+            self._ensure_active(request_id)
             decision = self.moviepilot.match(resolution)
+        except _ServiceCancelled:
+            raise
         except Exception:
             return self._complete(
                 request_id,
@@ -298,7 +313,10 @@ class AssistantService:
             match=decision.match,
         )
         try:
+            self._ensure_active(request_id)
             outcome = self.moviepilot.submit(decision, self.enable_subscription)
+        except _ServiceCancelled:
+            raise
         except Exception:
             return self._complete(
                 request_id,
@@ -353,6 +371,8 @@ class AssistantService:
         mention: TransientMention | None,
         result: ProcessingResult,
     ) -> ProcessingResult:
+        if self._is_cancelled():
+            return result
         self._safe_notify(
             "小红书影视助手",
             f"请求 {request_id} 处理结果：{result.status.value}",
@@ -377,7 +397,10 @@ class AssistantService:
             return
 
         try:
+            self._ensure_active(request_id)
             outcome = self.xhs.reply_to_comment(mention, text)
+        except _ServiceCancelled:
+            return
         except XhsPausedError as error:
             self.repository.mark_reply(request_id, status=ReplyStatus.FAILED)
             self._pause(error.code)
@@ -412,9 +435,16 @@ class AssistantService:
         if not self.notifications_enabled or self.notify is None:
             return
         try:
+            self._ensure_active()
             self.notify(title, text)
         except Exception:
             pass
+
+    def _ensure_active(self, request_id: int | None = None) -> None:
+        if self._is_cancelled():
+            if request_id is not None:
+                self.repository.retry_interrupted(request_id)
+            raise _ServiceCancelled
 
     def _require_request(self, request_id: int) -> StoredRequest:
         stored = self.repository.get(request_id)
@@ -442,3 +472,7 @@ class AssistantService:
         return urlunsplit(
             ("https", host, f"{prefixes[host]}{quote(note_id, safe='')}", "", "")
         )
+
+
+class _ServiceCancelled(RuntimeError):
+    """Stop the current generation before it starts another external call."""

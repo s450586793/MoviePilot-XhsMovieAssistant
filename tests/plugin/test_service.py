@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from typing import Any, Callable
 
 import pytest
@@ -196,6 +197,7 @@ def build_service(
     replies_enabled: bool = False,
     confidence_threshold: float = 0.85,
     notify: Callable[[str, str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> tuple[
     AssistantService,
     RequestRepository,
@@ -220,6 +222,7 @@ def build_service(
         enable_subscription=enable_subscription,
         replies_enabled=replies_enabled,
         confidence_threshold=confidence_threshold,
+        is_cancelled=is_cancelled,
     )
     xhs.repository = repository
     resolver.repository = repository
@@ -322,6 +325,97 @@ def test_subscribed_pipeline_commits_each_state_before_external_calls(
     assert moviepilot.submit_call_statuses == [RequestStatus.MATCHED]
     assert moviepilot.submit_calls[0][1] is True
     assert len(notifications) == 1
+
+
+@pytest.mark.parametrize(
+    ("stop_stage", "resolver_calls", "match_calls", "submit_calls"),
+    [
+        ("fetch", 0, 0, 0),
+        ("resolve", 1, 0, 0),
+        ("match", 1, 1, 0),
+    ],
+)
+def test_cancellation_stops_new_external_work_at_each_pipeline_boundary(
+    tmp_path: Path,
+    stop_stage: str,
+    resolver_calls: int,
+    match_calls: int,
+    submit_calls: int,
+) -> None:
+    stopped = Event()
+    service, repository, xhs, resolver, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+        replies_enabled=True,
+        is_cancelled=stopped.is_set,
+    )
+    xhs.mentions = [mention()]
+
+    if stop_stage == "fetch":
+        original = xhs.fetch_note
+
+        def stop_after_fetch(item: TransientMention) -> NoteDetail:
+            detail = original(item)
+            stopped.set()
+            return detail
+
+        xhs.fetch_note = stop_after_fetch
+    elif stop_stage == "resolve":
+        original_resolve = resolver.resolve
+
+        def stop_after_resolve(request: object) -> Resolution:
+            resolved = original_resolve(request)
+            stopped.set()
+            return resolved
+
+        resolver.resolve = stop_after_resolve
+    else:
+        original_match = moviepilot.match
+
+        def stop_after_match(value: Resolution) -> MatchDecision:
+            decision = original_match(value)
+            stopped.set()
+            return decision
+
+        moviepilot.match = stop_after_match
+
+    service.poll_once()
+
+    assert resolver.calls == resolver_calls
+    assert len(moviepilot.match_calls) == match_calls
+    assert len(moviepilot.submit_calls) == submit_calls
+    assert xhs.reply_calls == 0
+    assert notifications == []
+    assert repository.recent(1)[0].status is RequestStatus.NEW
+
+
+def test_cancellation_after_submit_prevents_notification_and_public_reply(
+    tmp_path: Path,
+) -> None:
+    stopped = Event()
+    service, _, xhs, _, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+        replies_enabled=True,
+        is_cancelled=stopped.is_set,
+    )
+    xhs.mentions = [mention()]
+    original_submit = moviepilot.submit
+
+    def stop_after_submit(
+        decision: MatchDecision, enable_subscription: bool
+    ) -> SubscriptionOutcome:
+        outcome = original_submit(decision, enable_subscription)
+        stopped.set()
+        return outcome
+
+    moviepilot.submit = stop_after_submit
+
+    service.poll_once()
+
+    assert len(moviepilot.submit_calls) == 1
+    assert xhs.reply_calls == 0
+    assert notifications == []
 
 
 @pytest.mark.parametrize(
