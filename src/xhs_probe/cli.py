@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from xhs_probe.capture import MentionsCaptureTimeout, capture_mentions_response
+from xhs_probe.capture import (
+    NOTIFICATION_URL,
+    MentionsCaptureTimeout,
+    capture_mentions_response,
+)
 from xhs_probe.contracts import MentionsPayloadError, summarize_mentions_payload
 from xhs_probe.storage import write_raw_capture
 
@@ -22,14 +26,22 @@ class ProbeSettings:
     output_dir: Path
     timeout_seconds: float
     cdp_token: str | None = None
+    notification_url: str = NOTIFICATION_URL
 
 
-def select_xhs_page(contexts: Iterable[Any]) -> Any | None:
-    """Return the first open Xiaohongshu page from browser contexts."""
+def select_xhs_page(
+    contexts: Iterable[Any],
+    *,
+    notification_url: str = NOTIFICATION_URL,
+) -> Any | None:
+    """Return the first open page matching the configured notification site."""
+    expected_hostname = urlsplit(notification_url).hostname or ""
     for context in contexts:
         for page in context.pages:
             hostname = urlsplit(page.url).hostname or ""
-            if hostname == "xiaohongshu.com" or hostname.endswith(".xiaohongshu.com"):
+            if hostname == expected_hostname or hostname.endswith(
+                f".{expected_hostname}"
+            ):
                 return page
     return None
 
@@ -53,13 +65,17 @@ async def run_probe(
     if not browser.contexts:
         raise RuntimeError("Chromium has no persistent browser context")
 
-    page = select_xhs_page(browser.contexts)
+    page = select_xhs_page(
+        browser.contexts,
+        notification_url=settings.notification_url,
+    )
     if page is None:
         page = await browser.contexts[0].new_page()
 
     captured = await capture_mentions_response(
         page,
         timeout_seconds=settings.timeout_seconds,
+        notification_url=settings.notification_url,
     )
     capture_time = captured_at or datetime.now(timezone.utc)
     capture_path = write_raw_capture(
@@ -95,6 +111,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=os.getenv("XHS_CDP_TOKEN") or None,
     )
     parser.add_argument(
+        "--notification-url",
+        default=os.getenv("XHS_NOTIFICATION_URL", NOTIFICATION_URL),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(os.getenv("XHS_PROBE_OUTPUT_DIR", "/data/probe")),
@@ -116,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = ProbeSettings(
         cdp_url=args.cdp_url,
         cdp_token=args.cdp_token,
+        notification_url=args.notification_url,
         output_dir=args.output_dir,
         timeout_seconds=args.timeout,
     )

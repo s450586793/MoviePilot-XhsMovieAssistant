@@ -12,6 +12,7 @@ services:
       TZ: "${TZ:-Asia/Shanghai}"
       XHS_CDP_URL: "${XHS_CDP_URL:?Set the CloakBrowser profile CDP URL}"
       XHS_CDP_TOKEN: "${XHS_CDP_TOKEN:-}"
+      XHS_NOTIFICATION_URL: "${XHS_NOTIFICATION_URL:-https://www.xiaohongshu.com/notification}"
       XHS_PROBE_OUTPUT_DIR: "/data/probe"
       XHS_PROBE_TIMEOUT_SECONDS: "${XHS_PROBE_TIMEOUT_SECONDS:-30}"
     volumes:

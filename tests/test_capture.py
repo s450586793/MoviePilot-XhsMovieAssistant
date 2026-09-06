@@ -81,6 +81,22 @@ def test_capture_navigates_when_current_page_is_not_notifications() -> None:
     assert page.url == "https://www.xiaohongshu.com/notification"
 
 
+def test_capture_navigates_to_configured_rednote_notifications() -> None:
+    page = FakePage()
+    page.url = "https://www.rednote.com/explore"
+
+    asyncio.run(
+        capture.capture_mentions_response(
+            page,
+            timeout_seconds=1,
+            notification_url="https://www.rednote.com/notification",
+        )
+    )
+
+    assert page.goto_count == 1
+    assert page.url == "https://www.rednote.com/notification"
+
+
 def test_capture_timeout_is_explicit_and_removes_listener() -> None:
     page = FakePage()
 

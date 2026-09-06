@@ -25,6 +25,7 @@ async def capture_mentions_response(
     page: Any,
     *,
     timeout_seconds: float,
+    notification_url: str = NOTIFICATION_URL,
 ) -> CapturedResponse:
     """Reload the notification page and capture its mentions API response."""
     loop = asyncio.get_running_loop()
@@ -42,7 +43,7 @@ async def capture_mentions_response(
         if urlsplit(page.url).path.rstrip("/") == "/notification":
             await page.reload(wait_until="domcontentloaded")
         else:
-            await page.goto(NOTIFICATION_URL, wait_until="domcontentloaded")
+            await page.goto(notification_url, wait_until="domcontentloaded")
         try:
             return await asyncio.wait_for(captured, timeout=timeout_seconds)
         except TimeoutError as error:

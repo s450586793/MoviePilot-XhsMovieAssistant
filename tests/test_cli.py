@@ -29,6 +29,18 @@ def test_select_xhs_page_ignores_unrelated_browser_tabs() -> None:
     assert selected is xhs_page
 
 
+def test_select_xhs_page_uses_configured_rednote_host() -> None:
+    xhs_login = FakePage("https://www.xiaohongshu.com/login")
+    rednote_notifications = FakePage("https://www.rednote.com/notification")
+
+    selected = cli.select_xhs_page(
+        [FakeContext([xhs_login, rednote_notifications])],
+        notification_url="https://www.rednote.com/notification",
+    )
+
+    assert selected is rednote_notifications
+
+
 class ProbeResponse:
     url = "https://www.xiaohongshu.com/api/sns/web/v1/you/mentions?num=20"
 
@@ -37,9 +49,14 @@ class ProbeResponse:
 
 
 class ProbePage(FakePage):
-    def __init__(self) -> None:
-        super().__init__("https://www.xiaohongshu.com/notification")
+    def __init__(
+        self,
+        url: str = "https://www.xiaohongshu.com/notification",
+    ) -> None:
+        super().__init__(url)
         self._listeners: list[Callable[[ProbeResponse], Any]] = []
+        self.goto_count = 0
+        self.reload_count = 0
 
     def on(self, _: str, listener: Callable[[ProbeResponse], Any]) -> None:
         self._listeners.append(listener)
@@ -48,6 +65,15 @@ class ProbePage(FakePage):
         self._listeners.remove(listener)
 
     async def reload(self, **_: Any) -> None:
+        self.reload_count += 1
+        await self._emit_response()
+
+    async def goto(self, url: str, **_: Any) -> None:
+        self.goto_count += 1
+        self.url = url
+        await self._emit_response()
+
+    async def _emit_response(self) -> None:
         for listener in list(self._listeners):
             result = listener(ProbeResponse())
             if inspect.isawaitable(result):
@@ -120,3 +146,30 @@ def test_run_probe_omits_authorization_header_without_token(tmp_path: Path) -> N
     asyncio.run(cli.run_probe(browser_type, settings))
 
     assert "headers" not in browser_type.connect_options
+
+
+def test_run_probe_uses_configured_rednote_notifications(tmp_path: Path) -> None:
+    xhs_login = ProbePage("https://www.xiaohongshu.com/login")
+    rednote_notifications = ProbePage("https://www.rednote.com/notification")
+    browser_type = ProbeBrowserType(rednote_notifications)
+    browser_type.browser.contexts[0].pages.insert(0, xhs_login)
+    settings = cli.ProbeSettings(
+        cdp_url="http://127.0.0.1:9222",
+        output_dir=tmp_path,
+        timeout_seconds=1,
+        notification_url="https://www.rednote.com/notification",
+    )
+
+    asyncio.run(cli.run_probe(browser_type, settings))
+
+    assert rednote_notifications.reload_count == 1
+    assert xhs_login.goto_count == 0
+
+
+def test_parser_reads_notification_url_from_environment(monkeypatch: Any) -> None:
+    notification_url = "https://www.rednote.com/notification"
+    monkeypatch.setenv("XHS_NOTIFICATION_URL", notification_url)
+
+    args = cli._build_parser().parse_args([])
+
+    assert args.notification_url == notification_url

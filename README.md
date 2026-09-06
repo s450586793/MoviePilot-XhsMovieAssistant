@@ -22,11 +22,19 @@ http://192.168.0.153:9050
 - 开启 `Auto launch`，使 DSM 或 CB 重启后自动恢复浏览器。
 - 不要复用其他业务 Profile，避免 Cookie 和标签页互相影响。
 
-启动该 Profile，在网页远程桌面中打开小红书通知页并登录小号。Profile 数据已由 CB 持久化到 DSM 的 `/volume4/docker/docker/makerhub/cloakbrowser`。
+启动该 Profile，在网页远程桌面中打开通知页并登录小号。Profile 数据已由 CB 持久化到 DSM 的 `/volume4/docker/docker/makerhub/cloakbrowser`。
+
+如果扫码时提示账号属于 RedNote 并跳转国际站，登录实际会保存在 `rednote.com`。此时将 `XHS_NOTIFICATION_URL` 设置为：
+
+```text
+https://www.rednote.com/notification
+```
+
+国内站账号继续使用默认的 `https://www.xiaohongshu.com/notification`。探针会按该配置选择浏览器标签页，两个站点使用相同的 mentions API path。
 
 ## 启动 Bridge
 
-根据 `.env.example` 创建 Git 忽略的 `.env`。从 CB Profile 页面复制 CDP endpoint，将 Profile ID 写入 `XHS_CDP_URL`；`XHS_CDP_TOKEN` 使用 CB 的 Access Token。不要提交 `.env`。
+根据 `.env.example` 创建 Git 忽略的 `.env`。从 CB Profile 页面复制 CDP endpoint，将 Profile ID 写入 `XHS_CDP_URL`；`XHS_CDP_TOKEN` 使用 CB 的 Access Token；`XHS_NOTIFICATION_URL` 根据账号所属站点配置。不要提交 `.env`。
 
 启动轻量 bridge 容器：
 
