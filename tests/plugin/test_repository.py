@@ -377,6 +377,7 @@ def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp
         connection.execute(
             "CREATE UNIQUE INDEX ux_xhs_requests_request_key ON xhs_requests (request_key)"
         )
+        schema_before = _request_table_schema_snapshot(connection)
 
     with pytest.raises(RuntimeError, match="request key collision"):
         RequestRepository(database_path)
@@ -388,8 +389,7 @@ def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp
             FROM xhs_requests ORDER BY id
             """
         ).fetchall()
-        indexes = {row[1] for row in connection.execute("PRAGMA index_list(xhs_requests)")}
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(xhs_requests)")}
+        schema_after = _request_table_schema_snapshot(connection)
     assert rows == [
         ("m1", "NEW", "PENDING", None, _phase1_request_key("note-1", "user-1", first_text)),
         (
@@ -400,8 +400,7 @@ def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp
             f"{_phase1_request_key('note-1', 'user-1', duplicate_text)}m2",
         ),
     ]
-    assert "ux_xhs_requests_request_key" in indexes
-    assert {"title", "original_title", "media_source", "tmdb_id"}.isdisjoint(columns)
+    assert schema_after == schema_before
 
 
 def test_repository_strips_or_redacts_sensitive_persistence_inputs(tmp_path) -> None:
@@ -497,3 +496,26 @@ def _phase1_request_key(note_id: str, sender_user_id: str, comment_text: str) ->
         [note_id, sender_user_id, normalized], ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _request_table_schema_snapshot(connection: sqlite3.Connection) -> tuple:
+    columns = tuple(connection.execute("PRAGMA table_info(xhs_requests)"))
+    indexes = tuple(connection.execute("PRAGMA index_list(xhs_requests)"))
+    index_details = tuple(
+        (
+            index,
+            connection.execute(
+                "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?",
+                (index[1],),
+            ).fetchone(),
+            tuple(
+                connection.execute(
+                    "SELECT seqno, cid, name, desc, coll, key "
+                    "FROM pragma_index_xinfo(?) ORDER BY seqno",
+                    (index[1],),
+                )
+            ),
+        )
+        for index in indexes
+    )
+    return columns, index_details
