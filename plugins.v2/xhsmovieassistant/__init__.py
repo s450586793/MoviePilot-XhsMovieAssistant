@@ -129,7 +129,7 @@ class XhsMovieAssistant(_PluginBase):
         if self._has_live_worker():
             self._cached_status["activity"] = "STOPPING"
             return
-        self._begin_generation()
+        generation, stop_event = self._begin_generation()
         values = dict(_DEFAULTS)
         if isinstance(config, Mapping):
             values.update(config)
@@ -139,7 +139,7 @@ class XhsMovieAssistant(_PluginBase):
             if not self._enabled:
                 return
             self._repository.recover_interrupted()
-            self._build_runtime()
+            self._build_runtime(generation, stop_event)
         except Exception:
             self._enabled = False
             self._cached_status["activity"] = "START_FAILED"
@@ -508,11 +508,12 @@ class XhsMovieAssistant(_PluginBase):
 
     def stop_service(self) -> None:
         """Bound shutdown and release active resources without deleting the Profile."""
-        self._enabled = False
         with self._worker_lock:
+            self._enabled = False
             self._stop_event.set()
             worker = self._worker
             browser = self._browser
+            self._clear_runtime(keep_repository=False)
         if browser is not None:
             context = getattr(browser, "_active_context", None)
             if context is not None:
@@ -528,7 +529,6 @@ class XhsMovieAssistant(_PluginBase):
         with self._worker_lock:
             if self._worker is worker and not _worker_is_alive(worker):
                 self._worker = None
-        self._clear_runtime(keep_repository=False)
 
     def _apply_config(self, values: Mapping[str, Any]) -> None:
         self._enable_subscription = _as_bool(values.get("enable_subscription"), False)
@@ -555,7 +555,11 @@ class XhsMovieAssistant(_PluginBase):
         requested = _as_bool(values.get("enabled"), False)
         self._enabled = bool(requested and self._authorized_user_ids)
 
-    def _build_runtime(self) -> None:
+    def _build_runtime(
+        self,
+        generation: int,
+        stop_event: threading.Event,
+    ) -> None:
         repository = self._repository
         if repository is None:
             raise RuntimeError("repository is unavailable")
@@ -582,13 +586,18 @@ class XhsMovieAssistant(_PluginBase):
             templates=ReplyTemplates(self._template_values),
         )
         with self._worker_lock:
-            if _worker_is_alive(self._worker):
-                raise RuntimeError("previous worker is still running")
+            if (
+                generation != self._generation
+                or stop_event is not self._stop_event
+                or stop_event.is_set()
+                or _worker_is_alive(self._worker)
+            ):
+                raise RuntimeError("plugin generation stopped during runtime build")
             self._browser = browser
             self._resolver = resolver
             self._moviepilot = moviepilot
             self._service = service
-        self._cached_status.update(browser=BrowserState.READY.value, activity="IDLE")
+            self._cached_status.update(browser=BrowserState.READY.value, activity="IDLE")
 
     def _ensure_browser(self) -> BrowserManager:
         if self._browser is None:
@@ -645,13 +654,14 @@ class XhsMovieAssistant(_PluginBase):
         with self._worker_lock:
             return _worker_is_alive(self._worker)
 
-    def _begin_generation(self) -> None:
+    def _begin_generation(self) -> tuple[int, threading.Event]:
         with self._worker_lock:
             if _worker_is_alive(self._worker):
                 raise RuntimeError("previous worker is still running")
             self._worker = None
             self._generation += 1
             self._stop_event = threading.Event()
+            return self._generation, self._stop_event
 
     def _service_action(self, method: str, request_id: int) -> Any:
         if self._service is None:

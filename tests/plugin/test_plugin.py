@@ -65,7 +65,11 @@ def test_init_plugin_stops_old_runtime_before_start(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
     calls = []
     monkeypatch.setattr(plugin, "stop_service", lambda: calls.append("stop"))
-    monkeypatch.setattr(plugin, "_build_runtime", lambda: calls.append("build"))
+    monkeypatch.setattr(
+        plugin,
+        "_build_runtime",
+        lambda generation, stop_event: calls.append("build"),
+    )
 
     plugin.init_plugin({"enabled": True, "authorized_user_ids": "u1"})
 
@@ -86,7 +90,11 @@ def test_default_config_is_dry_run_and_public_reply_off(tmp_path):
 def test_init_plugin_clamps_config_and_requires_authorized_ids(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
     built = []
-    monkeypatch.setattr(plugin, "_build_runtime", lambda: built.append(True))
+    monkeypatch.setattr(
+        plugin,
+        "_build_runtime",
+        lambda generation, stop_event: built.append(True),
+    )
 
     plugin.init_plugin(
         {
@@ -190,7 +198,11 @@ def test_init_recovers_interrupted_before_building_runtime(tmp_path, monkeypatch
             calls.append("recover")
 
     monkeypatch.setattr(entrypoint, "RequestRepository", FakeRepository)
-    monkeypatch.setattr(plugin, "_build_runtime", lambda: calls.append("build"))
+    monkeypatch.setattr(
+        plugin,
+        "_build_runtime",
+        lambda generation, stop_event: calls.append("build"),
+    )
 
     plugin.init_plugin({"enabled": True, "authorized_user_ids": "u1"})
 
@@ -594,7 +606,11 @@ def test_stop_retains_live_worker_after_join_timeout_and_reload_does_not_overlap
     worker = _FakeWorker(alive=True)
     plugin._worker = worker
     built = []
-    monkeypatch.setattr(plugin, "_build_runtime", lambda: built.append(True))
+    monkeypatch.setattr(
+        plugin,
+        "_build_runtime",
+        lambda generation, stop_event: built.append(True),
+    )
 
     plugin.stop_service()
     plugin.init_plugin({"enabled": True, "authorized_user_ids": "u1"})
@@ -616,6 +632,54 @@ def test_reload_replaces_generation_stop_event_instead_of_clearing_old_event(tmp
     assert plugin._stop_event is not old_stop_event
     assert plugin._stop_event.is_set() is False
     plugin.stop_service()
+
+
+def test_stop_during_runtime_build_prevents_stale_runtime_publication(
+    tmp_path, monkeypatch
+):
+    plugin = _plugin(tmp_path)
+    build_started = threading.Event()
+    finish_build = threading.Event()
+    browser = SimpleNamespace(_active_context=None)
+
+    def build_browser(*args, **kwargs):
+        build_started.set()
+        finish_build.wait(timeout=1)
+        return browser
+
+    monkeypatch.setattr(entrypoint, "BrowserManager", build_browser)
+    monkeypatch.setattr(entrypoint, "MediaResolver", lambda: SimpleNamespace())
+    monkeypatch.setattr(entrypoint, "MoviePilotGateway", lambda: SimpleNamespace())
+    monkeypatch.setattr(entrypoint, "XhsGateway", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        entrypoint,
+        "AssistantService",
+        lambda **kwargs: SimpleNamespace(poll_once=lambda: None),
+    )
+    initializer = threading.Thread(
+        target=plugin.init_plugin,
+        args=({"enabled": True, "authorized_user_ids": "u1"},),
+    )
+
+    initializer.start()
+    try:
+        assert build_started.wait(timeout=1)
+        plugin.stop_service()
+    finally:
+        finish_build.set()
+        initializer.join(timeout=1)
+
+    assert initializer.is_alive() is False
+    assert plugin.get_state() is False
+    assert plugin._stop_event.is_set() is True
+    assert plugin._browser is None
+    assert plugin._resolver is None
+    assert plugin._moviepilot is None
+    assert plugin._service is None
+    calls = []
+    assert plugin._start_worker("poll", lambda: calls.append("poll")) is False
+    assert plugin._worker is None
+    assert calls == []
 
 
 def test_stop_boundary_rejects_all_workers_until_next_initialized_generation(
