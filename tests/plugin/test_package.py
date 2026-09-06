@@ -75,8 +75,10 @@ def test_readme_documents_safe_moviepilot_operator_flow() -> None:
 def test_readme_documents_browser_and_public_reply_recovery() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    required_statuses = ("`ERROR`", "`PENDING`", "`SENT`", "`POSTED`", "`FAILED`")
+    required_statuses = ("`ERROR`", "`PENDING`", "`SENT`", "`FAILED`")
     assert all(status in readme for status in required_statuses)
+    assert "已成功发出" in readme
+    assert "`POSTED`" not in readme
     assert "不会自动重试" in readme
     assert "人工处理" in readme
 
