@@ -364,6 +364,11 @@ def test_every_direct_endpoint_fails_closed_without_credentials(
 def test_qr_endpoint_returns_authenticated_inline_payload(tmp_path):
     plugin = _plugin(tmp_path)
     plugin._browser = SimpleNamespace(
+        check_login=lambda: entrypoint.OperationResult(
+            success=False,
+            code="LOGIN_REQUIRED",
+            should_pause=True,
+        ),
         capture_login_qrcode=lambda: entrypoint.OperationResult(
             success=True, data=b"png"
         )
@@ -376,11 +381,51 @@ def test_qr_endpoint_returns_authenticated_inline_payload(tmp_path):
     assert "test-api-token" not in repr(response.__dict__)
 
 
+def test_login_endpoint_detects_persisted_login_after_reload(tmp_path):
+    plugin = _plugin(tmp_path)
+    captured = []
+    plugin._browser = SimpleNamespace(
+        check_login=lambda: entrypoint.OperationResult(success=True),
+        capture_login_qrcode=lambda: captured.append(True),
+    )
+
+    response = plugin.start_login(apikey="test-api-token")
+
+    assert response.success is True
+    assert response.data == {"login": "LOGGED_IN"}
+    assert plugin._cached_status["login"] == "LOGGED_IN"
+    assert plugin._cached_status["qrcode"] is None
+    assert captured == []
+
+
+def test_login_endpoint_preserves_qr_when_status_is_indeterminate(tmp_path):
+    plugin = _plugin(tmp_path)
+    qrcode = "data:image/png;base64,b2xk"
+    plugin._cached_status.update(login="WAITING_FOR_SCAN", qrcode=qrcode)
+    captured = []
+    plugin._browser = SimpleNamespace(
+        check_login=lambda: entrypoint.OperationResult(
+            success=False,
+            code="TEMPORARY_FAILURE",
+            should_pause=False,
+        ),
+        capture_login_qrcode=lambda: captured.append(True),
+    )
+
+    response = plugin.start_login(apikey="test-api-token")
+
+    assert response.success is False
+    assert response.data == {"code": "TEMPORARY_FAILURE"}
+    assert plugin._cached_status["login"] == "WAITING_FOR_SCAN"
+    assert plugin._cached_status["qrcode"] == qrcode
+    assert captured == []
+
+
 @pytest.mark.parametrize("secret", ["Cookie=session-secret", "xsec_token=secret"])
 def test_browser_failure_response_redacts_external_secret(tmp_path, secret):
     plugin = _plugin(tmp_path)
     plugin._browser = SimpleNamespace(
-        capture_login_qrcode=lambda: entrypoint.OperationResult(
+        check_login=lambda: entrypoint.OperationResult(
             success=False,
             code="UPSTREAM_ERROR",
             message=secret,
@@ -599,7 +644,7 @@ def test_diagnostic_response_redacts_runtime_secret_values(tmp_path):
 
 @pytest.mark.parametrize(
     ("endpoint_name", "browser_method"),
-    [("start_login", "capture_login_qrcode"), ("logout", "logout")],
+    [("start_login", "check_login"), ("logout", "logout")],
 )
 def test_browser_pause_outcome_is_persisted_and_safely_notified_once(
     tmp_path, endpoint_name, browser_method
@@ -637,7 +682,7 @@ def test_ordinary_browser_failure_does_not_pause_or_notify(tmp_path):
     repository = _RuntimeRepository()
     plugin._repository = repository
     plugin._browser = SimpleNamespace(
-        capture_login_qrcode=lambda: entrypoint.OperationResult(
+        check_login=lambda: entrypoint.OperationResult(
             success=False,
             code="UPSTREAM_ERROR",
             should_pause=False,
@@ -659,7 +704,7 @@ def test_browser_outcome_response_replaces_unknown_code_with_public_code(tmp_pat
     repository = _RuntimeRepository()
     plugin._repository = repository
     plugin._browser = SimpleNamespace(
-        capture_login_qrcode=lambda: entrypoint.OperationResult(
+        check_login=lambda: entrypoint.OperationResult(
             success=False,
             code="Cookie=session-secret",
             should_pause=True,

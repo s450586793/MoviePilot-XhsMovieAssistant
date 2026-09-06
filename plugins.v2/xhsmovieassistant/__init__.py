@@ -381,7 +381,14 @@ class XhsMovieAssistant(_PluginBase):
         if not self._authorized(request, apikey):
             return self._unauthorized()
         try:
-            result = self._ensure_browser().capture_login_qrcode()
+            browser = self._ensure_browser()
+            login = browser.check_login()
+            if login.success:
+                self._cached_status.update(login="LOGGED_IN", qrcode=None)
+                return schemas.Response(success=True, data={"login": "LOGGED_IN"})
+            if login.code != "LOGIN_REQUIRED":
+                return self._operation_response(login)
+            result = browser.capture_login_qrcode()
             if not result.success or not isinstance(result.data, bytes):
                 return self._operation_response(result)
             qrcode = "data:image/png;base64," + base64.b64encode(result.data).decode("ascii")

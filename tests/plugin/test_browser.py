@@ -607,19 +607,29 @@ def test_check_login_uses_dom_fallback_for_logged_out_page(
     assert result.should_pause is True
 
 
-def test_check_login_treats_missing_state_and_login_dom_as_authenticated(
+def test_check_login_fails_closed_without_state_or_login_dom(
     manager, fake_playwright
 ) -> None:
     fake_playwright.page.initial_logged_in = None
 
-    assert manager.check_login().success is True
+    result = manager.check_login()
+
+    assert result.success is False
+    assert result.code == "TEMPORARY_FAILURE"
+    assert result.should_pause is False
 
 
-def test_check_login_ignores_hidden_login_dom(manager, fake_playwright) -> None:
+def test_check_login_fails_closed_with_only_hidden_login_dom(
+    manager, fake_playwright
+) -> None:
     fake_playwright.page.initial_logged_in = None
     fake_playwright.page.present_selectors.add(".login-btn")
 
-    assert manager.check_login().success is True
+    result = manager.check_login()
+
+    assert result.success is False
+    assert result.code == "TEMPORARY_FAILURE"
+    assert result.should_pause is False
 
 
 def test_check_login_finds_visible_second_selector(manager, fake_playwright) -> None:

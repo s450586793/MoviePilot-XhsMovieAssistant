@@ -29,5 +29,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
+filterwarnings = [
+  'ignore:Using `httpx` with `starlette\.testclient` is deprecated; install `httpx2` instead\.:starlette.exceptions.StarletteDeprecationWarning',
+  'ignore:The anyio\.abc\.BlockingPortal alias is deprecated, use anyio\.from_thread\.BlockingPortal instead\.:DeprecationWarning:starlette\.testclient',
+]
 pythonpath = ["src", "plugins.v2"]
 testpaths = ["tests"]

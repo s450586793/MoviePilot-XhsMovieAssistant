@@ -241,7 +241,11 @@ class BrowserManager:
                     message="Login is required",
                     should_pause=True,
                 )
-            return OperationResult(success=True)
+            return OperationResult(
+                success=False,
+                code="TEMPORARY_FAILURE",
+                message="Login status could not be determined",
+            )
 
     def logout(self) -> OperationResult:
         """Clear cookies and web storage from the persistent Profile."""
