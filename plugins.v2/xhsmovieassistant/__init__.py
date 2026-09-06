@@ -28,7 +28,7 @@ from .notifications import enqueue_pause_notification, flush_notification_outbox
 from .repository import RequestRepository
 from .resolver import MediaResolver
 from .service import AssistantService
-from .templates import DEFAULT_TEMPLATES, ReplyTemplates
+from .templates import DEFAULT_TEMPLATES, REPLY_CATEGORY_STATUSES, ReplyTemplates
 from .xhs import XhsGateway
 from .xhs_contracts import parse_authorized_ids
 
@@ -42,7 +42,14 @@ _DEFAULTS: dict[str, Any] = {
     "authorized_user_ids": "",
     "poll_interval_minutes": 2,
     "confidence_threshold": 0.85,
+    **{f"reply_{category}_enabled": False for category in REPLY_CATEGORY_STATUSES},
     **{f"template_{key}": value for key, value in DEFAULT_TEMPLATES.items()},
+}
+_REPLY_CATEGORY_LABELS = {
+    "success": "回复订阅成功",
+    "existing": "回复已存在",
+    "confirmation": "回复需人工确认",
+    "failure": "回复处理失败",
 }
 _SITE_URLS = {
     "xiaohongshu": "https://www.xiaohongshu.com",
@@ -117,6 +124,9 @@ class XhsMovieAssistant(_PluginBase):
         self._enable_subscription = False
         self._notifications_enabled = True
         self._reply_enabled = False
+        self._reply_categories = {
+            category: False for category in REPLY_CATEGORY_STATUSES
+        }
         self._site = "xiaohongshu"
         self._authorized_user_ids = frozenset()
         self._authorized_user_ids_raw = ""
@@ -233,6 +243,15 @@ class XhsMovieAssistant(_PluginBase):
             _field("VSwitch", "允许真实订阅", "enable_subscription", cols=6),
             _field("VSwitch", "MoviePilot 通知", "notifications_enabled", cols=6),
             _field("VSwitch", "小红书公开回复", "reply_enabled", cols=6),
+            *(
+                _field(
+                    "VSwitch",
+                    label,
+                    f"reply_{category}_enabled",
+                    cols=3,
+                )
+                for category, label in _REPLY_CATEGORY_LABELS.items()
+            ),
             _field(
                 "VSelect",
                 "站点",
@@ -574,6 +593,10 @@ class XhsMovieAssistant(_PluginBase):
         self._enable_subscription = _as_bool(values.get("enable_subscription"), False)
         self._notifications_enabled = _as_bool(values.get("notifications_enabled"), True)
         self._reply_enabled = _as_bool(values.get("reply_enabled"), False)
+        self._reply_categories = {
+            category: _as_bool(values.get(f"reply_{category}_enabled"), False)
+            for category in REPLY_CATEGORY_STATUSES
+        }
         site = str(values.get("site") or "").strip()
         self._site = site if site in _SITE_URLS else "xiaohongshu"
         raw_ids = values.get("authorized_user_ids")
@@ -623,7 +646,10 @@ class XhsMovieAssistant(_PluginBase):
             confidence_threshold=self._confidence_threshold,
             replies_enabled=self._reply_enabled,
             notifications_enabled=self._notifications_enabled,
-            templates=ReplyTemplates(self._template_values),
+            templates=ReplyTemplates(
+                self._template_values,
+                enabled_categories=self._reply_categories,
+            ),
             is_cancelled=lambda: (
                 stop_event.is_set() or generation != self._generation
             ),

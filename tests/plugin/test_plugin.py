@@ -10,6 +10,7 @@ import xhsmovieassistant as entrypoint
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.testclient import TestClient
+from xhsmovieassistant.models import ProcessingResult, RequestStatus
 
 
 def _plugin(tmp_path: Path) -> Any:
@@ -109,6 +110,20 @@ def test_default_config_is_dry_run_and_public_reply_off(tmp_path):
 
     assert defaults["enable_subscription"] is False
     assert defaults["reply_enabled"] is False
+    assert {
+        key: defaults[key]
+        for key in (
+            "reply_success_enabled",
+            "reply_existing_enabled",
+            "reply_confirmation_enabled",
+            "reply_failure_enabled",
+        )
+    } == {
+        "reply_success_enabled": False,
+        "reply_existing_enabled": False,
+        "reply_confirmation_enabled": False,
+        "reply_failure_enabled": False,
+    }
     assert defaults["poll_interval_minutes"] == 2
     assert defaults["confidence_threshold"] == 0.85
 
@@ -504,10 +519,36 @@ def test_form_contains_required_native_vuetify_controls(tmp_path):
         if node["component"] in {"VSwitch", "VSelect", "VTextField", "VTextarea"}
     }
 
-    assert components.count("VSwitch") == 4
+    assert components.count("VSwitch") == 8
     assert "VSelect" in components
     assert {"authorized_user_ids", "poll_interval_minutes", "confidence_threshold"} <= models
+    assert {
+        "reply_success_enabled",
+        "reply_existing_enabled",
+        "reply_confirmation_enabled",
+        "reply_failure_enabled",
+    } <= models
     assert {f"template_{status}" for status in entrypoint.DEFAULT_TEMPLATES} <= models
+
+
+def test_runtime_binds_per_category_reply_switches_into_templates(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    plugin.init_plugin(
+        {
+            "enabled": True,
+            "authorized_user_ids": "u1",
+            "reply_enabled": True,
+            "reply_success_enabled": True,
+        }
+    )
+
+    templates = plugin._service.templates
+    subscribed = ProcessingResult(status=RequestStatus.SUBSCRIBED)
+    confirmation = ProcessingResult(status=RequestStatus.NEED_CONFIRMATION)
+    assert templates.render(subscribed) is not None
+    assert templates.render(confirmation) is None
+    plugin.stop_service()
 
 
 def test_detail_page_degrades_when_repository_read_fails(tmp_path):

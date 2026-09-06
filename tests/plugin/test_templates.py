@@ -46,6 +46,23 @@ def test_subscribed_template_renders_only_deterministic_media_fields() -> None:
     )
 
 
+def test_reply_categories_can_enable_only_success_outcomes() -> None:
+    templates = ReplyTemplates(
+        enabled_categories={
+            "success": True,
+            "existing": False,
+            "confirmation": False,
+            "failure": False,
+        }
+    )
+
+    assert templates.render(resolved_result(RequestStatus.SUBSCRIBED)) is not None
+    assert templates.render(resolved_result(RequestStatus.ALREADY_SUBSCRIBED)) is None
+    assert templates.render(resolved_result(RequestStatus.ALREADY_IN_LIBRARY)) is None
+    assert templates.render(ProcessingResult(status=RequestStatus.NEED_CONFIRMATION)) is None
+    assert templates.render(ProcessingResult(status=RequestStatus.FAILED)) is None
+
+
 def test_custom_template_supports_known_fields_and_caps_reply_length() -> None:
     templates = ReplyTemplates(
         {"SUBSCRIBED": "{title}|{original_title}|{year}|{season}|{result}" + "字" * 300}
