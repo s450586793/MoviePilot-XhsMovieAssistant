@@ -11,12 +11,14 @@ def resolution(
     title: str,
     year: int | None = None,
     media_type: str = "movie",
+    season: int | None = None,
 ) -> Resolution:
     return Resolution(
         status="resolved",
         title=title,
         media_type=media_type,  # type: ignore[arg-type]
         year=year,
+        season=season,
         confidence=0.95,
     )
 
@@ -24,13 +26,19 @@ def resolution(
 def media(title: str, year: int, media_type: str = "movie") -> SimpleNamespace:
     media_id = 157336 if year == 2014 else year
     return SimpleNamespace(
+        source="themoviedb",
+        scrape_source=None,
+        type=media_type,
         title=title,
+        en_title="",
         original_title="",
         year=str(year),
-        type=media_type,
-        source="tmdb",
-        id=str(media_id),
+        season=None,
         tmdb_id=media_id,
+        douban_id=None,
+        bangumi_id=None,
+        anilist_id=None,
+        media_id=None,
     )
 
 
@@ -77,8 +85,43 @@ def test_exact_title_year_and_type_selects_one_result(gateway: MoviePilotGateway
 
     assert decision.match is not None
     assert decision.match.tmdb_id == 157336
+    assert decision.match.source == "themoviedb"
+    assert decision.match.source_id == "157336"
     assert "media_info" not in decision.model_dump()
     assert "media_info" not in repr(decision)
+
+
+def test_match_uses_real_moviepilot_douban_identity_shape(
+    gateway: MoviePilotGateway,
+) -> None:
+    candidate = media("霸王别姬", 1993)
+    candidate.source = "douban"
+    candidate.tmdb_id = None
+    candidate.douban_id = "1291546"
+    gateway.search_results.append(candidate)
+
+    decision = gateway.match(resolution(title="霸王别姬", year=1993))
+
+    assert decision.reason_code == "MATCHED"
+    assert decision.match is not None
+    assert decision.match.source == "douban"
+    assert decision.match.source_id == "1291546"
+
+
+def test_match_propagates_requested_season_instead_of_candidate_season(
+    gateway: MoviePilotGateway,
+) -> None:
+    candidate = media("最后生还者", 2023, "tv")
+    candidate.season = 1
+    gateway.search_results.append(candidate)
+
+    decision = gateway.match(
+        resolution(title="最后生还者", year=2023, media_type="tv", season=2)
+    )
+
+    assert decision.reason_code == "MATCHED"
+    assert decision.match is not None
+    assert decision.match.season == 2
 
 
 def test_match_normalizes_moviepilot_media_type_enum(gateway: MoviePilotGateway) -> None:
@@ -198,6 +241,41 @@ def test_submit_stops_when_media_already_exists(
 
     assert outcome.status is RequestStatus.ALREADY_IN_LIBRARY
     assert len(state.media_exists_calls) == 1
+    assert state.subscribe_exists_calls == []
+    assert state.add_calls == []
+
+
+def test_submit_only_treats_requested_tv_season_as_present_in_library(
+    subscription_gateway: tuple[MoviePilotGateway, SimpleNamespace],
+) -> None:
+    gateway, state = subscription_gateway
+    state.in_library = SimpleNamespace(seasons={1: [1, 2, 3]})
+    decision = matched_decision()
+    decision.match = decision.match.model_copy(
+        update={"media_type": "tv", "season": 2}
+    )
+
+    outcome = gateway.submit(decision, enable_subscription=True)
+
+    assert outcome.status is RequestStatus.SUBSCRIBED
+    assert len(state.subscribe_exists_calls) == 1
+    assert state.subscribe_exists_calls[0][1].begin_season == 2
+    assert state.add_calls[0]["season"] == 2
+
+
+def test_submit_stops_when_requested_tv_season_is_in_library_collection(
+    subscription_gateway: tuple[MoviePilotGateway, SimpleNamespace],
+) -> None:
+    gateway, state = subscription_gateway
+    state.in_library = SimpleNamespace(seasons={2: []})
+    decision = matched_decision()
+    decision.match = decision.match.model_copy(
+        update={"media_type": "tv", "season": 2}
+    )
+
+    outcome = gateway.submit(decision, enable_subscription=True)
+
+    assert outcome.status is RequestStatus.ALREADY_IN_LIBRARY
     assert state.subscribe_exists_calls == []
     assert state.add_calls == []
 

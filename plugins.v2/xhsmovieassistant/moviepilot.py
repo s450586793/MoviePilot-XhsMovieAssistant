@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import MediaMatch, RequestStatus, Resolution
+
+
+_MEDIA_SOURCE_ALIASES = {
+    "tmdb": "themoviedb",
+    "themoviedb": "themoviedb",
+    "douban": "douban",
+    "bangumi": "bangumi",
+    "anilist": "anilist",
+}
+_MEDIA_SOURCE_ID_FIELDS = {
+    "themoviedb": ("tmdb_id", "tmdbid"),
+    "douban": ("douban_id", "doubanid"),
+    "bangumi": ("bangumi_id", "bangumiid"),
+    "anilist": ("anilist_id", "anilistid"),
+}
 
 
 class MatchDecision(BaseModel):
@@ -87,6 +103,36 @@ def _optional_int(value: Any) -> int | None:
     return None
 
 
+def _media_identity(media_info: Any) -> tuple[str, str]:
+    source = _normalize(_value(media_info, "source", "media_source"))
+    source = _MEDIA_SOURCE_ALIASES.get(source, source)
+    explicit_id = _value(media_info, "media_id")
+    if source and explicit_id is not None and str(explicit_id).strip():
+        return source, str(explicit_id).strip()
+
+    if source in _MEDIA_SOURCE_ID_FIELDS:
+        source_id = _value(media_info, *_MEDIA_SOURCE_ID_FIELDS[source])
+        if source_id is not None and str(source_id).strip():
+            return source, str(source_id).strip()
+
+    for fallback_source, fields in _MEDIA_SOURCE_ID_FIELDS.items():
+        source_id = _value(media_info, *fields)
+        if source_id is not None and str(source_id).strip():
+            return fallback_source, str(source_id).strip()
+    return "", ""
+
+
+def _requested_media_exists(existing: Any, match: MediaMatch) -> bool:
+    if not existing:
+        return False
+    if match.media_type != "tv" or match.season is None:
+        return True
+    seasons = getattr(existing, "seasons", None)
+    if not isinstance(seasons, Mapping):
+        return False
+    return any(_optional_int(season) == match.season for season in seasons)
+
+
 class MoviePilotGateway:
     """Match resolved media with MoviePilot's native media search."""
 
@@ -160,7 +206,8 @@ class MoviePilotGateway:
             if match.season is not None:
                 meta.begin_season = match.season
 
-            if runtime.MediaServerChain().media_exists(decision.media_info):
+            existing = runtime.MediaServerChain().media_exists(decision.media_info)
+            if _requested_media_exists(existing, match):
                 return SubscriptionOutcome(status=RequestStatus.ALREADY_IN_LIBRARY)
             subscribe_chain = runtime.SubscribeChain()
             if subscribe_chain.exists(decision.media_info, meta):
@@ -199,8 +246,7 @@ class MoviePilotGateway:
     def _candidates(self, results: list[Any], resolution: Resolution) -> list[_Candidate]:
         deduplicated: dict[tuple[str, str], Any] = {}
         for media_info in results:
-            source = _normalize(_value(media_info, "media_source", "source"))
-            source_id = str(_value(media_info, "media_id", "id", "source_id") or "").strip()
+            source, source_id = _media_identity(media_info)
             if source and source_id:
                 deduplicated.setdefault((source, source_id), media_info)
 
@@ -224,14 +270,13 @@ class MoviePilotGateway:
             score = 0.55 * normalized_title_match + 0.20 * normalized_original_match
             score += 0.15 if resolution.year is not None and candidate_year == str(resolution.year) else 0.0
             score += 0.10 if candidate_type == resolution.media_type else 0.0
-            source = str(_value(media_info, "media_source", "source") or "").strip()
-            source_id = str(_value(media_info, "media_id", "id", "source_id") or "").strip()
+            source, source_id = _media_identity(media_info)
             match = MediaMatch(
                 title=title,
                 original_title=original_title,
                 media_type=resolution.media_type,
                 year=_optional_int(_value(media_info, "year")),
-                season=_optional_int(_value(media_info, "season")),
+                season=resolution.season,
                 source=source,
                 source_id=source_id,
                 tmdb_id=_optional_int(_value(media_info, "tmdb_id", "tmdbid")),
