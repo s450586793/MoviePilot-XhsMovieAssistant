@@ -1,102 +1,49 @@
 # 小红书影视助手
 
-当前仓库已实现 Phase 1 至 Phase 3：
+小红书影视助手是 MoviePilot V2 插件：它只处理已授权账号发出的评论艾特，使用 MoviePilot 已配置的 AI 识别影视，再通过 MoviePilot 原生订阅链路处理结果。需要 `MoviePilot >= 2.15.6`。
 
-- 复用 DSM 上已有的 CloakBrowser Manager，不再打包 Chromium。
-- 由人工完成小红书小号登录和验证码。
-- 捕获一次“评论和 @”接口响应并输出脱敏字段摘要。
-- 只接受配置的稳定主号 `user_id`，其他用户请求不入库。
-- 使用 SQLite 保存请求，并按 mention 和规范化请求双重去重。
-- 不调用 AI，不连接 MoviePilot，不创建订阅，不回复小红书。
+先确认 dry-run 结果，再决定是否放开任何有外部影响的操作。默认关闭订阅创建和小红书公开回复。
 
-## 准备 CloakBrowser Profile
+## 安装
 
-DSM 上的 CloakBrowser Manager 当前入口是：
+1. 先由发布者将本仓库发布到公开 HTTPS Git 地址；在 MoviePilot 的“设置 - 插件”中，将自定义插件市场地址添加为“本仓库实际发布后的公开 HTTPS Git URL”。发布者必须将这段占位文字替换为实际地址，当前仓库没有可填写的远程地址。
+2. 刷新自定义插件市场，找到“小红书影视助手”，安装并启用插件。
+3. 在插件详情页选择“安装 Chromium”。安装完成前不要开始登录或轮询。
 
-```text
-http://192.168.0.153:9050
-```
+## 首次授权
 
-在管理页面新建一个只供本项目使用的 Profile：
+1. 在插件设置中保持“启用轮询”关闭，填写将要允许发起请求的稳定“授权用户 ID”。
+2. 稳定 ID 应从一次已确认的页面请求中核对后填写，不要把昵称、展示名或可变短 ID 当作授权依据；多个 ID 可用逗号或换行分隔。
+3. 点击“生成登录二维码”，用专门的小红书账号扫码。若登录页自动跳转到国际站，在站点下拉框选择 `RedNote`，再重新生成二维码并完成授权。
+4. 扫码完成后检查插件页面：浏览器应为 `READY`，登录状态应不再是 `WAITING_FOR_SCAN`。然后保存设置。
 
-- 名称建议使用 `xhs-movie-assistant`。
-- 保持 `Headless` 关闭，以便人工扫码和处理验证码。
-- 开启 `Auto launch`，使 DSM 或 CB 重启后自动恢复浏览器。
-- 不要复用其他业务 Profile，避免 Cookie 和标签页互相影响。
+## 先验证，再订阅
 
-启动该 Profile，在网页远程桌面中打开通知页并登录小号。Profile 数据已由 CB 持久化到 DSM 的 `/volume4/docker/docker/makerhub/cloakbrowser`。
+1. 保持“允许真实订阅”关闭，打开“启用轮询”。这是 dry-run：插件会识别、匹配和去重，但不会创建真实订阅。
+2. 用已授权账号发送一条可明确识别的影视请求，观察插件页面的请求列表和状态。
+3. 确认 `DRY_RUN_MATCHED`、匹配标题和季信息都正确后，才在设置中打开“允许真实订阅”。后续成功请求会显示 `SUBSCRIBED`。
 
-如果扫码时提示账号属于 RedNote 并跳转国际站，登录实际会保存在 `rednote.com`。此时将 `XHS_NOTIFICATION_URL` 设置为：
+不要将“MoviePilot 通知”当作订阅开关；它只控制 MoviePilot 内的通知。小红书“公开回复”为可选功能，风险更高：它会把处理结果公开写回站点，建议在长期 dry-run 稳定后、且已审核回复模板时才打开。
 
-```text
-https://www.rednote.com/notification
-```
+## 状态说明
 
-国内站账号继续使用默认的 `https://www.xiaohongshu.com/notification`。探针会按该配置选择浏览器标签页，两个站点使用相同的 mentions API path。
+浏览器状态：`READY` 表示可继续；`PAUSED` 表示风险控制、会话或浏览器问题已暂停轮询。登录状态 `WAITING_FOR_SCAN` 表示等待扫码，`LOGGED_OUT` 表示已退出。活动状态 `IDLE` 表示空闲，`POLL` 表示正在轮询，`START_FAILED` 或 `FAILED` 表示需要查看下方恢复步骤。
 
-## 启动 Bridge
+请求状态：`NEW` 为待处理，`FETCHED` 为已获取，`RESOLVING` 为 AI 正在识别；`NEED_CONFIRMATION` 表示信息不足或有歧义，需要人工确认；`NOT_MEDIA` 表示不是影视请求；`MATCHED` 表示已找到候选；`DRY_RUN_MATCHED` 表示 dry-run 匹配成功；`ALREADY_IN_LIBRARY` 和 `ALREADY_SUBSCRIBED` 表示无需再次订阅；`SUBSCRIBED` 表示已创建订阅；`FAILED` 表示本次失败；`IGNORED` 表示人工忽略。
 
-根据 `.env.example` 创建 Git 忽略的 `.env`。从 CB Profile 页面复制 CDP endpoint，将 Profile ID 写入 `XHS_CDP_URL`；`XHS_CDP_TOKEN` 使用 CB 的 Access Token；`XHS_NOTIFICATION_URL` 根据账号所属站点配置。不要提交 `.env`。
+可通过请求列表的“人工确认”“重新处理”或“忽略”操作处理 `NEED_CONFIRMATION`、`FAILED` 和未处理条目；恢复后再轮询。
 
-启动轻量 bridge 容器：
+## 恢复
 
-```bash
-sudo docker compose up -d --build
-```
+| 现象 | 处理 |
+| --- | --- |
+| 出现 `300012`、验证码或站点风险控制 | 停止高频重试，在浏览器页面人工完成验证；验证完成后点击“恢复轮询”。 |
+| 登录过期、`LOGGED_OUT` 或 `LOGIN_REQUIRED` | 生成新的二维码完成扫码；如账号跳转国际站，确认站点仍选择 `RedNote`。 |
+| Chromium 安装失败或缺少系统库 | 按 MoviePilot 部署镜像/宿主机的 Chromium 依赖说明补齐库后，重新点击“安装 Chromium”。不要把浏览器依赖写入插件配置。 |
+| AI 测试失败或 AI 未启用 | 先在 MoviePilot 系统设置中配置并启用 AI，再使用插件的“测试 AI”确认；插件不保存模型凭据。 |
+| `NEED_CONFIRMATION` 或歧义结果 | 使用“人工确认”指定唯一影片/剧集，或选择“忽略”；不要仅凭相近标题开启真实订阅。 |
+| `PAUSED`、`FAILED` 或 `START_FAILED` | 先处理页面显示的浏览器/登录原因，再点击“恢复轮询”；恢复前保持真实订阅关闭。 |
 
-该 Compose 不再启动第二个浏览器，只通过带 Bearer Token 的 CDP 连接现有 CB Profile。
+## 实现证据
 
-## 捕获一次通知响应
-
-确认小号已登录后，用主号在一篇小红书笔记中 @ 小号。然后执行：
-
-```bash
-sudo docker compose exec xhs-mp-bridge xhs-phase1-probe
-```
-
-命令只在标准输出显示通知数量、通知类型和必需字段计数。原始响应写入 `data/app/probe/`，目录权限为 `0700`，文件权限为 `0600`，并被 Git 忽略。
-
-若结果为 `timeout`，先检查远程 Chromium 是否仍保持登录，再执行一次探针。不要连续高频重试。
-
-## 导入 SQLite 并验证去重
-
-在 `.env` 中配置主号的稳定 ID：
-
-```text
-AUTHORIZED_XHS_USER_ID=replace-with-main-account-user-id
-XHS_DATABASE_PATH=/data/app.db
-```
-
-将一次 Phase 1 捕获结果离线导入 SQLite：
-
-```bash
-sudo docker compose exec xhs-mp-bridge \
-  xhs-phase3-import /data/probe/mentions-YYYYMMDDTHHMMSSZ.json
-```
-
-命令只输出创建、重复、忽略和无效记录的数量，不输出用户 ID、评论或 token。对同一捕获文件再次执行时，记录应计入 `duplicate_count`，数据库仍只保留一条请求。
-
-SQLite 表为 `xhs_requests`，数据库文件和原始捕获文件都位于已持久化的 `data/app/` 目录。数据库不会保存 Cookie、CDP Token 或 `xsec_token`。
-
-## 验证与停止
-
-```bash
-pytest -q
-sudo docker compose config -q
-sudo docker compose ps
-sudo docker compose stop
-```
-
-Phase 1 通过标准：
-
-1. CB Profile 中能正常登录小红书小号。
-2. 重启 CB Profile 后登录状态仍保留。
-3. 小号网页能看到主号发出的新 @。
-4. 探针能捕获 mentions API 响应，且没有验证码、HTTP 403/429 或异常退出。
-
-Phase 3 通过标准：
-
-1. 只有 `AUTHORIZED_XHS_USER_ID` 对应账号的通知会生成请求。
-2. 同一 `mention_id` 重复导入不会新增记录。
-3. 同一笔记、发送者和规范化评论即使使用新的 mention，也不会新增记录。
-4. `app.db` 权限为 `0600`，且不包含 Cookie、CDP Token 或 `xsec_token`。
+仓库中保留了 Phase 1–3 的离线验证证据：`src/xhs_probe/` 包含早期捕获与导入工具，`tests/test_capture.py`、`tests/test_ingest.py` 和 `tests/test_phase3_cli.py` 覆盖其契约。它们用于追溯和开发验证；日常安装、扫码、授权、状态查看与恢复都应在 MoviePilot 插件界面完成。

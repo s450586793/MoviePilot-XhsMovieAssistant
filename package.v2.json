@@ -1,0 +1,17 @@
+{
+  "XhsMovieAssistant": {
+    "name": "小红书影视助手",
+    "description": "读取授权账号的评论艾特，复用 MoviePilot AI 识别影视并安全创建订阅。",
+    "labels": "订阅,AI,小红书,RedNote",
+    "version": "0.1.0",
+    "icon": "xhsmovieassistant.png",
+    "author": "community",
+    "level": 1,
+    "v2": true,
+    "v3": false,
+    "system_version": ">=2.15.6",
+    "history": {
+      "v0.1.0": "首个可测试版本，支持扫码、授权艾特、AI 识别、去重和订阅。"
+    }
+  }
+}
