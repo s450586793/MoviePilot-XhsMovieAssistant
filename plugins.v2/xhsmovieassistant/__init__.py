@@ -51,6 +51,9 @@ _REPLY_CATEGORY_LABELS = {
     "confirmation": "回复需人工确认",
     "failure": "回复处理失败",
 }
+_REQUEST_ACTION_STATUSES = frozenset(
+    {"NEW", "FAILED", "NEED_CONFIRMATION", "DRY_RUN_MATCHED"}
+)
 _SITE_URLS = {
     "xiaohongshu": "https://www.xiaohongshu.com",
     "rednote": "https://www.rednote.com",
@@ -315,6 +318,7 @@ class XhsMovieAssistant(_PluginBase):
         """Render cached health and durable request summaries without I/O."""
         status = self._page_status()
         rows = self._request_rows()
+        request_actions = self._request_actions(rows)
         paused = status.get("browser") == BrowserState.PAUSED.value
         alert_type = "warning" if paused else ("success" if self.get_state() else "info")
         qr_source = status.get("qrcode") or ""
@@ -355,6 +359,23 @@ class XhsMovieAssistant(_PluginBase):
                             _action_button("立即轮询", "mdi-refresh", "/poll"),
                             _action_button("恢复轮询", "mdi-play", "/resume"),
                             _action_button("退出登录", "mdi-logout", "/logout"),
+                            _action_button(
+                                "测试 AI",
+                                "mdi-robot-outline",
+                                "/test/ai",
+                                params={"title": "星际穿越"},
+                            ),
+                            _action_button(
+                                "测试 MoviePilot",
+                                "mdi-movie-search-outline",
+                                "/test/moviepilot",
+                                params={"title": "星际穿越", "media_type": "movie"},
+                            ),
+                            _action_button(
+                                "测试通知",
+                                "mdi-bell-check-outline",
+                                "/test/notification",
+                            ),
                         ],
                     },
                 ],
@@ -368,12 +389,33 @@ class XhsMovieAssistant(_PluginBase):
                         {"title": "ID", "key": "id"},
                         {"title": "状态", "key": "status"},
                         {"title": "影视作品", "key": "title"},
+                        {"title": "类型", "key": "media_type"},
                         {"title": "年份", "key": "year"},
+                        {"title": "季", "key": "season"},
+                        {"title": "匹配", "key": "match"},
+                        {"title": "订阅 ID", "key": "subscription_id"},
+                        {"title": "回复", "key": "reply"},
+                        {"title": "错误", "key": "error"},
                         {"title": "更新时间", "key": "updated_at"},
                     ],
                     "items": rows,
                 },
             },
+            *(
+                [
+                    {
+                        "component": "VDivider",
+                        "props": {"class": "my-3"},
+                    },
+                    {
+                        "component": "div",
+                        "props": {"class": "d-flex flex-column ga-1"},
+                        "content": request_actions,
+                    },
+                ]
+                if request_actions
+                else []
+            ),
         ]
 
     def install_chromium(
@@ -821,11 +863,73 @@ class XhsMovieAssistant(_PluginBase):
                 "id": item.id,
                 "status": item.status.value,
                 "title": item.title or "-",
+                "media_type": item.media_type or "-",
                 "year": item.year or "-",
+                "season": item.season or "-",
+                "match": _match_text(item),
+                "subscription_id": item.subscription_id or "-",
+                "reply": _reply_text(item),
+                "error": item.error or "-",
                 "updated_at": item.updated_at.isoformat(timespec="seconds"),
             }
             for item in requests
         ]
+
+    def _request_actions(
+        self, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        actions = []
+        for row in rows:
+            if row["status"] not in _REQUEST_ACTION_STATUSES:
+                continue
+            request_id = int(row["id"])
+            manual_params = {
+                "title": "" if row["title"] == "-" else row["title"],
+                "media_type": (
+                    row["media_type"]
+                    if row["media_type"] in {"movie", "tv"}
+                    else "unknown"
+                ),
+                "year": None if row["year"] == "-" else row["year"],
+                "season": None if row["season"] == "-" else row["season"],
+            }
+            actions.append(
+                {
+                    "component": "div",
+                    "props": {
+                        "class": "d-flex flex-wrap align-center py-1",
+                    },
+                    "content": [
+                        {
+                            "component": "span",
+                            "props": {
+                                "class": "text-body-2 font-weight-medium mr-2",
+                            },
+                            "text": f"#{request_id} {row['title']}",
+                        },
+                        _action_button(
+                            "重新处理",
+                            "mdi-replay",
+                            f"/requests/{request_id}/reprocess",
+                            size="small",
+                        ),
+                        _action_button(
+                            "忽略",
+                            "mdi-eye-off-outline",
+                            f"/requests/{request_id}/ignore",
+                            size="small",
+                        ),
+                        _action_button(
+                            "人工确认",
+                            "mdi-check-decagram-outline",
+                            f"/requests/{request_id}/manual",
+                            params=manual_params,
+                            size="small",
+                        ),
+                    ],
+                }
+            )
+        return actions
 
     def _page_status(self) -> dict[str, Any]:
         status = dict(self._cached_status)
@@ -877,22 +981,52 @@ def _field(
     }
 
 
-def _action_button(text: str, icon: str, path: str) -> dict[str, Any]:
+def _action_button(
+    text: str,
+    icon: str,
+    path: str,
+    *,
+    params: Mapping[str, Any] | None = None,
+    size: str | None = None,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "api": f"plugin/XhsMovieAssistant{path}",
+        "method": "post",
+    }
+    if params is not None:
+        event["params"] = dict(params)
+    props = {
+        "prepend-icon": icon,
+        "variant": "tonal",
+        "class": "ma-1",
+    }
+    if size is not None:
+        props["size"] = size
     return {
         "component": "VBtn",
-        "props": {
-            "prepend-icon": icon,
-            "variant": "tonal",
-            "class": "ma-1",
-        },
+        "props": props,
         "text": text,
-        "events": {
-            "click": {
-                "api": f"plugin/XhsMovieAssistant{path}",
-                "method": "post",
-            }
-        },
+        "events": {"click": event},
     }
+
+
+def _match_text(item: Any) -> str:
+    source = str(item.media_source or "")
+    source_id = str(item.media_source_id or "")
+    if not source or not source_id:
+        return "-"
+    score = item.score
+    suffix = (
+        f" ({score:.2f})"
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+        else ""
+    )
+    return f"{source}:{source_id}{suffix}"
+
+
+def _reply_text(item: Any) -> str:
+    status = item.reply_status.value
+    return f"{status}:{item.reply_id}" if item.reply_id else status
 
 
 def _extract_credential(

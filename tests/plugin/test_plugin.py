@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,7 +11,7 @@ import xhsmovieassistant as entrypoint
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.testclient import TestClient
-from xhsmovieassistant.models import ProcessingResult, RequestStatus
+from xhsmovieassistant.models import ProcessingResult, ReplyStatus, RequestStatus
 
 
 def _plugin(tmp_path: Path) -> Any:
@@ -253,6 +254,65 @@ def test_detail_page_uses_cached_status_table_qr_and_icon_buttons(tmp_path):
     buttons = [node for node in nodes if node["component"] == "VBtn"]
     assert buttons
     assert all(button["props"]["prepend-icon"].startswith("mdi-") for button in buttons)
+    actions = {button["events"]["click"]["api"] for button in buttons}
+    assert {
+        "plugin/XhsMovieAssistant/test/ai",
+        "plugin/XhsMovieAssistant/test/moviepilot",
+        "plugin/XhsMovieAssistant/test/notification",
+    } <= actions
+
+
+def test_detail_page_exposes_match_errors_and_durable_row_actions(tmp_path):
+    plugin = _plugin(tmp_path)
+    request = SimpleNamespace(
+        id=7,
+        status=RequestStatus.NEED_CONFIRMATION,
+        title="Arrival",
+        original_title="",
+        media_type="movie",
+        year=2016,
+        season=None,
+        media_source="tmdb",
+        media_source_id="329865",
+        tmdb_id=329865,
+        score=0.93,
+        subscription_id=None,
+        error="UPSTREAM_ERROR",
+        reply_status=ReplyStatus.PENDING,
+        reply_id=None,
+        updated_at=datetime(2026, 9, 7, 12, tzinfo=timezone.utc),
+    )
+    plugin._repository = SimpleNamespace(recent=lambda limit: [request])
+
+    nodes = _components(plugin.get_page())
+    table = next(node for node in nodes if node["component"] == "VDataTable")
+    headers = {header["key"] for header in table["props"]["headers"]}
+    row = table["props"]["items"][0]
+
+    assert {"media_type", "season", "match", "subscription_id", "error", "reply"} <= headers
+    assert row["match"] == "tmdb:329865 (0.93)"
+    assert row["error"] == "UPSTREAM_ERROR"
+    assert row["reply"] == "PENDING"
+
+    request_buttons = {
+        button["events"]["click"]["api"]: button
+        for button in nodes
+        if button["component"] == "VBtn"
+        and "/requests/7/" in button["events"]["click"]["api"]
+    }
+    assert set(request_buttons) == {
+        "plugin/XhsMovieAssistant/requests/7/reprocess",
+        "plugin/XhsMovieAssistant/requests/7/ignore",
+        "plugin/XhsMovieAssistant/requests/7/manual",
+    }
+    assert request_buttons[
+        "plugin/XhsMovieAssistant/requests/7/manual"
+    ]["events"]["click"]["params"] == {
+        "title": "Arrival",
+        "media_type": "movie",
+        "year": 2016,
+        "season": None,
+    }
 
 
 def test_init_recovers_interrupted_before_building_runtime(tmp_path, monkeypatch):
