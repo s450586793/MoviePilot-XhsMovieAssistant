@@ -11,14 +11,18 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
+from urllib.parse import unquote
 
 
 _SITE_ORIGINS = {
     "xiaohongshu": "https://www.xiaohongshu.com",
     "rednote": "https://www.rednote.com",
 }
-_QR_SELECTOR = ".login-container .qrcode-img, .qrcode-container img, [class*='qrcode'] img"
-_LOGIN_SELECTOR = ".login-btn, .login-container"
+_QR_SELECTOR = (
+    ".login-container .qrcode-img:visible, .qrcode-container img:visible, "
+    "[class*='qrcode'] img:visible"
+)
+_LOGIN_SELECTOR = ".login-btn:visible, .login-container:visible"
 _INSTALL_TIMEOUT_SECONDS = 600
 _MAX_RESULT_MESSAGE = 8192
 _PROFILE_LOCK = threading.Lock()
@@ -28,6 +32,16 @@ _SENSITIVE_QUERY_PATTERN = re.compile(
     r"(?:^|[?&])[^=&]*(token|key|secret|password|passwd|authorization|credential)[^=&]*=",
     re.IGNORECASE,
 )
+_SENSITIVE_TEXT_PATTERN = re.compile(
+    r"(?:xsec[_-]?token|access[_-]?token|refresh[_-]?token|api[\s_-]?key|"
+    r"authorization|password|passwd|credential|secret)\s*[:=]",
+    re.IGNORECASE,
+)
+_BEARER_PATTERN = re.compile(r"\bbearer\s+\S+", re.IGNORECASE)
+_JWT_PATTERN = re.compile(
+    r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"
+)
+_USERINFO_URL_PATTERN = re.compile(r"https?://[^\s/]*@", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -64,7 +78,6 @@ class BrowserManager:
         self.proxy = proxy
         self._playwright_factory = playwright_factory or _default_playwright
         self._active_context: Any = None
-        self._configure_browser_path()
 
     @property
     def executable_path(self) -> Path | None:
@@ -132,12 +145,11 @@ class BrowserManager:
             try:
                 self.profile_path.mkdir(parents=True, exist_ok=True)
                 self.browser_path.mkdir(parents=True, exist_ok=True)
-                self._configure_browser_path()
-                playwright = self._playwright_factory()
-                chromium = playwright.chromium
                 executable = self.executable_path
                 if executable is None:
-                    executable = Path(chromium.executable_path)
+                    raise FileNotFoundError("Chromium is not installed")
+                playwright = self._playwright_factory()
+                chromium = playwright.chromium
                 context = chromium.launch_persistent_context(
                     user_data_dir=self.profile_path,
                     executable_path=executable,
@@ -162,8 +174,8 @@ class BrowserManager:
         """Open the configured site and return the visible login QR as PNG bytes."""
         try:
             with self.session() as page:
-                page.goto(self.base_url, wait_until="domcontentloaded")
-                risk = self.detect_risk(page)
+                response = page.goto(self.base_url, wait_until="domcontentloaded")
+                risk = self.detect_risk(page, _response_status(response))
                 if not risk.success:
                     return risk
                 locator = page.locator(_QR_SELECTOR).first
@@ -198,8 +210,8 @@ class BrowserManager:
 
     def _check_login(self) -> OperationResult:
         with self.session() as page:
-            page.goto(self.base_url, wait_until="domcontentloaded")
-            risk = self.detect_risk(page)
+            response = page.goto(self.base_url, wait_until="domcontentloaded")
+            risk = self.detect_risk(page, _response_status(response))
             if not risk.success:
                 return risk
             try:
@@ -232,16 +244,21 @@ class BrowserManager:
         """Clear cookies and web storage from the persistent Profile."""
         try:
             with self.session() as page:
-                page.goto(self.base_url, wait_until="domcontentloaded")
+                response = page.goto(self.base_url, wait_until="domcontentloaded")
+                risk = self.detect_risk(page, _response_status(response))
                 self._active_context.clear_cookies()
                 page.evaluate("window.localStorage.clear(); window.sessionStorage.clear();")
+                if not risk.success:
+                    return risk
             return OperationResult(success=True)
         except BrowserBusyError:
             raise
         except Exception:
             return _browser_failure()
 
-    def detect_risk(self, page: Any) -> OperationResult:
+    def detect_risk(
+        self, page: Any, response_status: int | None = None
+    ) -> OperationResult:
         """Classify login and anti-abuse pages into stable persistence-safe codes."""
         try:
             text = str(page.locator("body").inner_text(timeout=3_000) or "")
@@ -252,16 +269,15 @@ class BrowserManager:
                 message="Page risk state could not be determined",
             )
 
-        status = _page_status(page)
         normalized = text.casefold()
-        if status == 429 or re.search(r"\b429\b", normalized) or "too many requests" in normalized:
+        if response_status == 429 or "too many requests" in normalized:
             return _pause_result("RATE_LIMITED", "Request rate was limited")
-        if status == 403 or re.search(r"\b403\b", normalized) or "forbidden" in normalized:
+        forbidden_markers = ("403 forbidden", "access forbidden", "access denied")
+        if response_status == 403 or any(marker in normalized for marker in forbidden_markers):
             return _pause_result("AUTH_REQUIRED", "Access was forbidden")
         if "登录状态已过期" in text or "session expired" in normalized:
             return _pause_result("SESSION_EXPIRED", "Session expired")
         risk_markers = (
-            "300012",
             "访问存在异常",
             "人机验证",
             "请完成验证",
@@ -269,12 +285,12 @@ class BrowserManager:
             "captcha",
             "security verification",
         )
-        if any(marker in normalized for marker in risk_markers):
+        structured_risk_code = re.search(
+            r"(?:error_code|code)\s*[:=]\s*[\"']?300012\b", normalized
+        )
+        if structured_risk_code or any(marker in normalized for marker in risk_markers):
             return _pause_result("XHS_RISK_CONTROL", "Risk control verification is required")
         return OperationResult(success=True)
-
-    def _configure_browser_path(self) -> None:
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(self.browser_path)
 
 
 def _default_playwright() -> Any:
@@ -322,11 +338,10 @@ def _browser_failure() -> OperationResult:
     )
 
 
-def _page_status(page: Any) -> int | None:
-    for name in ("response_status", "last_response_status", "status"):
-        value = getattr(page, name, None)
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
+def _response_status(response: Any) -> int | None:
+    value = getattr(response, "status", None)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
     return None
 
 
@@ -349,6 +364,24 @@ def _bounded_output(*parts: object) -> str:
 
 
 def _sanitize_urls(text: str) -> str:
+    return "\n".join(_sanitize_line(line) for line in text.splitlines())
+
+
+def _sanitize_line(line: str) -> str:
+    value = line
+    for _ in range(3):
+        if (
+            _SENSITIVE_TEXT_PATTERN.search(value)
+            or _BEARER_PATTERN.search(value)
+            or _JWT_PATTERN.search(value)
+            or _USERINFO_URL_PATTERN.search(value)
+        ):
+            return "[REDACTED]"
+        decoded = unquote(value)
+        if decoded == value:
+            break
+        value = decoded
+
     def replace(match: re.Match[str]) -> str:
         url = match.group(0)
         authority = url.split("/", 3)[2]
@@ -356,4 +389,4 @@ def _sanitize_urls(text: str) -> str:
             return "[REDACTED_URL]"
         return url
 
-    return _URL_PATTERN.sub(replace, text)
+    return _URL_PATTERN.sub(replace, line)

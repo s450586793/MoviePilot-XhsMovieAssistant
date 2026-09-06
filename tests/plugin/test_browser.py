@@ -17,28 +17,47 @@ class FakeLocator:
 
     @property
     def first(self):
-        return self
+        matches = self._matches()
+        return FakeLocator(self.page, matches[0]) if matches else self
 
     def count(self) -> int:
-        return int(
-            self.selector in self.page.visible_selectors
-            or self.selector in self.page.present_selectors
-        )
+        return len(self._matches())
 
     def is_visible(self, **kwargs) -> bool:
-        return self.selector in self.page.visible_selectors
+        matches = self._matches()
+        return bool(matches) and matches[0] in self.page.visible_selectors
 
     def wait_for(self, **kwargs) -> None:
         self.page.wait_args = kwargs
-        if self.selector not in self.page.visible_selectors:
+        if not self.is_visible():
             raise TimeoutError("locator was not visible")
 
     def screenshot(self, **kwargs) -> bytes:
         self.page.screenshot_args = kwargs
+        self.page.screenshot_selector = self.selector
         return self.page.qr_png
 
     def inner_text(self, **kwargs) -> str:
         return self.page.text
+
+    def _matches(self) -> list[str]:
+        matches = []
+        for selector in self.selector.split(","):
+            selector = selector.strip()
+            visible_only = selector.endswith(":visible")
+            candidate = selector.removesuffix(":visible")
+            present = (
+                candidate in self.page.visible_selectors
+                or candidate in self.page.present_selectors
+            )
+            if present and (not visible_only or candidate in self.page.visible_selectors):
+                matches.append(candidate)
+        return matches
+
+
+class FakeResponse:
+    def __init__(self, status: int):
+        self.status = status
 
 
 class FakePage:
@@ -48,13 +67,16 @@ class FakePage:
         self.present_selectors: set[str] = set()
         self.text = ""
         self.qr_png = b"\x89PNG\r\n\x1a\nqr"
+        self.goto_status = 200
         self.goto_args = None
         self.wait_args = None
         self.screenshot_args = None
+        self.screenshot_selector = None
         self.evaluate_calls = []
 
-    def goto(self, *args, **kwargs) -> None:
+    def goto(self, *args, **kwargs) -> FakeResponse:
         self.goto_args = (args, kwargs)
+        return FakeResponse(self.goto_status)
 
     def evaluate(self, expression: str):
         self.evaluate_calls.append(expression)
@@ -106,11 +128,16 @@ class FakePlaywright:
 
 @pytest.fixture
 def fake_playwright(tmp_path) -> FakePlaywright:
-    executable = tmp_path / "ms-playwright" / "chromium-1187" / "chrome-linux" / "chrome"
+    executable = _make_executable(tmp_path)
+    return FakePlaywright(executable)
+
+
+def _make_executable(data_path: Path) -> Path:
+    executable = data_path / "ms-playwright" / "chromium-1187" / "chrome-linux" / "chrome"
     executable.parent.mkdir(parents=True)
     executable.touch()
     executable.chmod(0o700)
-    return FakePlaywright(executable)
+    return executable
 
 
 @pytest.fixture
@@ -144,8 +171,9 @@ def test_supported_site_resolves_to_fixed_origin(tmp_path, site: str, expected_u
 
 
 def test_session_uses_persistent_profile_proxy_and_expected_options(
-    tmp_path, fake_playwright
+    tmp_path, fake_playwright, monkeypatch
 ) -> None:
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "parent-owned-cache")
     proxy = {"server": "http://proxy:7890", "username": "proxy-user", "password": "proxy-pass"}
     browser = BrowserManager(
         tmp_path,
@@ -165,7 +193,7 @@ def test_session_uses_persistent_profile_proxy_and_expected_options(
         "viewport": {"width": 1280, "height": 900},
         "locale": "zh-CN",
     }
-    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path / "ms-playwright")
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "parent-owned-cache"
     assert fake_playwright.context_closed is True
     assert fake_playwright.stopped is True
 
@@ -191,14 +219,16 @@ def test_session_is_not_reentrant_on_the_same_thread(manager) -> None:
 
 
 def test_sessions_are_serialized_between_threads(tmp_path) -> None:
-    first_runtime = FakePlaywright(tmp_path / "first-chrome")
-    second_runtime = FakePlaywright(tmp_path / "second-chrome")
+    first_data = tmp_path / "a"
+    second_data = tmp_path / "b"
+    first_runtime = FakePlaywright(_make_executable(first_data))
+    second_runtime = FakePlaywright(_make_executable(second_data))
     first_entered = Event()
     release_first = Event()
     second_entered = Event()
 
-    first = BrowserManager(tmp_path / "a", "rednote", None, lambda: first_runtime)
-    second = BrowserManager(tmp_path / "b", "rednote", None, lambda: second_runtime)
+    first = BrowserManager(first_data, "rednote", None, lambda: first_runtime)
+    second = BrowserManager(second_data, "rednote", None, lambda: second_runtime)
 
     def run_first() -> None:
         with first.session():
@@ -220,6 +250,26 @@ def test_sessions_are_serialized_between_threads(tmp_path) -> None:
         second_future.result(timeout=2)
 
     assert second_entered.is_set()
+
+
+def test_managers_never_mutate_browser_env_or_share_executables(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "parent-owned-cache")
+    first_data = tmp_path / "first"
+    second_data = tmp_path / "second"
+    first_runtime = FakePlaywright(_make_executable(first_data))
+    second_runtime = FakePlaywright(_make_executable(second_data))
+
+    first = BrowserManager(first_data, "rednote", None, lambda: first_runtime)
+    second = BrowserManager(second_data, "rednote", None, lambda: second_runtime)
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "parent-owned-cache"
+    with first.session():
+        pass
+    with second.session():
+        pass
+
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "parent-owned-cache"
+    assert first_runtime.launch_args["executable_path"] == first_runtime.executable_path
+    assert second_runtime.launch_args["executable_path"] == second_runtime.executable_path
 
 
 def test_chromium_status_detects_executable_in_private_cache(manager, fake_playwright) -> None:
@@ -317,6 +367,41 @@ def test_install_chromium_failure_bounds_and_redacts_output(tmp_path, monkeypatc
     assert "secret" not in result.message
 
 
+@pytest.mark.parametrize(
+    ("output", "secrets"),
+    [
+        ("xsec_token=topsecret", ("topsecret",)),
+        (
+            "api_key=sk-live-secret Authorization: Bearer "
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+            ("sk-live-secret", "eyJhbGciOiJIUzI1NiJ9"),
+        ),
+        ("https://alice:password@example.test/archive", ("alice", "password")),
+        (
+            "https%253A%252F%252Fuser%253Apassword%2540example.test%252Farchive"
+            "%253Fxsec_token%253Dtopsecret",
+            ("password", "topsecret"),
+        ),
+    ],
+)
+def test_install_chromium_redaction_fails_closed_for_encoded_credentials(
+    tmp_path, monkeypatch, output: str, secrets: tuple[str, ...]
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout=output, stderr=""
+        ),
+    )
+
+    result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
+
+    assert result.success is False
+    for secret in secrets:
+        assert secret not in result.message
+
+
 def test_install_chromium_timeout_is_sanitized(tmp_path, monkeypatch) -> None:
     def fake_run(argv, **kwargs):
         raise subprocess.TimeoutExpired(
@@ -349,7 +434,7 @@ def test_install_chromium_spawn_failure_returns_stable_code(tmp_path, monkeypatc
 
 def test_check_login_prefers_initial_state(manager, fake_playwright) -> None:
     fake_playwright.page.initial_logged_in = True
-    fake_playwright.page.visible_selectors.add(".login-btn, .login-container")
+    fake_playwright.page.visible_selectors.add(".login-btn")
 
     result = manager.check_login()
 
@@ -362,7 +447,7 @@ def test_check_login_uses_dom_fallback_for_logged_out_page(
     manager, fake_playwright, state
 ) -> None:
     fake_playwright.page.initial_logged_in = state
-    fake_playwright.page.visible_selectors.add(".login-btn, .login-container")
+    fake_playwright.page.visible_selectors.add(".login-container")
 
     result = manager.check_login()
 
@@ -381,16 +466,26 @@ def test_check_login_treats_missing_state_and_login_dom_as_authenticated(
 
 def test_check_login_ignores_hidden_login_dom(manager, fake_playwright) -> None:
     fake_playwright.page.initial_logged_in = None
-    fake_playwright.page.present_selectors.add(".login-btn, .login-container")
+    fake_playwright.page.present_selectors.add(".login-btn")
 
     assert manager.check_login().success is True
+
+
+def test_check_login_finds_visible_second_selector(manager, fake_playwright) -> None:
+    fake_playwright.page.initial_logged_in = None
+    fake_playwright.page.present_selectors.add(".login-btn")
+    fake_playwright.page.visible_selectors.add(".login-container")
+
+    result = manager.check_login()
+
+    assert result.code == "LOGIN_REQUIRED"
+    assert result.should_pause is True
 
 
 def test_capture_login_qrcode_returns_png_bytes_without_writing_file(
     manager, fake_playwright, tmp_path
 ) -> None:
-    selector = ".login-container .qrcode-img, .qrcode-container img, [class*='qrcode'] img"
-    fake_playwright.page.visible_selectors.add(selector)
+    fake_playwright.page.visible_selectors.add(".login-container .qrcode-img")
 
     result = manager.capture_login_qrcode()
 
@@ -398,6 +493,16 @@ def test_capture_login_qrcode_returns_png_bytes_without_writing_file(
     assert result.data == fake_playwright.page.qr_png
     assert fake_playwright.page.screenshot_args == {"type": "png"}
     assert list(tmp_path.rglob("*.png")) == []
+
+
+def test_capture_login_qrcode_skips_hidden_first_selector(manager, fake_playwright) -> None:
+    fake_playwright.page.present_selectors.add(".login-container .qrcode-img")
+    fake_playwright.page.visible_selectors.add(".qrcode-container img")
+
+    result = manager.capture_login_qrcode()
+
+    assert result.success is True
+    assert fake_playwright.page.screenshot_selector == ".qrcode-container img"
 
 
 def test_capture_login_qrcode_reports_missing_locator(manager) -> None:
@@ -413,6 +518,7 @@ def test_browser_actions_sanitize_launch_failures(tmp_path, operation: str) -> N
     def fail_factory():
         raise RuntimeError("failed at https://user:password@example.test/profile")
 
+    _make_executable(tmp_path)
     browser = BrowserManager(tmp_path, "rednote", None, fail_factory)
 
     result = getattr(browser, operation)()
@@ -423,13 +529,15 @@ def test_browser_actions_sanitize_launch_failures(tmp_path, operation: str) -> N
 
 
 def test_session_releases_lock_when_playwright_factory_fails(tmp_path, fake_playwright) -> None:
+    failed_data = tmp_path / "failed"
+    _make_executable(failed_data)
     failing = BrowserManager(
-        tmp_path / "failed",
+        failed_data,
         "rednote",
         None,
         lambda: (_ for _ in ()).throw(RuntimeError("launch failed")),
     )
-    working = BrowserManager(tmp_path / "working", "rednote", None, lambda: fake_playwright)
+    working = BrowserManager(tmp_path, "rednote", None, lambda: fake_playwright)
 
     with pytest.raises(RuntimeError, match="launch failed"):
         with failing.session():
@@ -451,10 +559,20 @@ def test_logout_clears_only_persistent_context_storage(manager, fake_playwright)
     assert fake_playwright.context_closed is True
 
 
+def test_logout_clears_profile_and_reports_navigation_risk(manager, fake_playwright) -> None:
+    fake_playwright.page.goto_status = 403
+
+    result = manager.logout()
+
+    assert fake_playwright.cookies_cleared is True
+    assert result.code == "AUTH_REQUIRED"
+    assert result.should_pause is True
+
+
 @pytest.mark.parametrize(
     ("text", "code"),
     [
-        ("当前访问存在异常，请完成验证 error_code=300012", "XHS_RISK_CONTROL"),
+        ("error_code=300012", "XHS_RISK_CONTROL"),
         ("请完成验证码或人机验证", "XHS_RISK_CONTROL"),
         ("403 Forbidden", "AUTH_REQUIRED"),
         ("429 Too Many Requests", "RATE_LIMITED"),
@@ -472,6 +590,27 @@ def test_detect_risk_returns_stable_pause_code(manager, fake_playwright, text, c
 
 
 def test_detect_risk_returns_clear_result_for_normal_page(manager, fake_playwright) -> None:
-    fake_playwright.page.text = "评论和 @"
+    fake_playwright.page.text = (
+        "评论和 @，共有 429 条评论，403 位用户参与，编号 300012"
+    )
 
     assert manager.detect_risk(fake_playwright.page) == OperationResult(success=True)
+
+
+@pytest.mark.parametrize(
+    ("operation", "status", "expected_code"),
+    [
+        ("check_login", 403, "AUTH_REQUIRED"),
+        ("capture_login_qrcode", 429, "RATE_LIMITED"),
+    ],
+)
+def test_navigation_response_status_pauses_even_with_empty_body(
+    manager, fake_playwright, operation: str, status: int, expected_code: str
+) -> None:
+    fake_playwright.page.goto_status = status
+    fake_playwright.page.text = ""
+
+    result = getattr(manager, operation)()
+
+    assert result.code == expected_code
+    assert result.should_pause is True
