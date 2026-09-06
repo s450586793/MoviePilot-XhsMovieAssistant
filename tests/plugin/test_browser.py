@@ -409,6 +409,45 @@ def test_install_chromium_redaction_fails_closed_for_encoded_credentials(
 @pytest.mark.parametrize(
     "output",
     [
+        "https%3A%2F%2Fdownloads.example%2Fa%3Fxsec_token%3Dtopsecret",
+        "https%253A%252F%252Fdownloads.example%252Fa%253Fapi_token%253Dtopsecret",
+    ],
+)
+def test_install_chromium_redacts_encoded_query_tokens_without_userinfo(
+    tmp_path, monkeypatch, output: str
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout=output, stderr=""
+        ),
+    )
+
+    result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
+
+    assert result.message == "[REDACTED]"
+    assert "topsecret" not in result.message
+
+
+def test_install_chromium_preserves_normal_encoded_url(tmp_path, monkeypatch) -> None:
+    output = "https%253A%252F%252Fdownloads.example%252Fa%253Fbuild%253D123"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout=output, stderr=""
+        ),
+    )
+
+    result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
+
+    assert result.message == output
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
         "Cookie: session=topsecret",
         "Set-Cookie: session=topsecret; HttpOnly",
         "MOVIEPILOT_API_TOKEN=topsecret",

@@ -377,6 +377,7 @@ def _sanitize_line(line: str) -> str:
     for _ in range(3):
         if (
             _SENSITIVE_TEXT_PATTERN.search(value)
+            or _SENSITIVE_QUERY_PATTERN.search(value)
             or _BEARER_PATTERN.search(value)
             or _JWT_PATTERN.search(value)
             or _USERINFO_URL_PATTERN.search(value)
