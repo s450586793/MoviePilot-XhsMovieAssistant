@@ -29,12 +29,13 @@ def mention(
     *,
     mention_id: str = "m1",
     sender_user_id: str = "authorized-user",
+    comment_text: str = "想看",
 ) -> TransientMention:
     return TransientMention(
         mention_id=mention_id,
         sender_user_id=sender_user_id,
         comment_id=f"comment-{mention_id}",
-        comment_text="想看",
+        comment_text=comment_text,
         note_id=f"note-{mention_id}",
         xsec_token="transient-token",
         created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
@@ -534,6 +535,27 @@ def test_reprocess_requeues_failed_request_without_persisting_token(tmp_path: Pa
     assert resolver.requests[1].note.content == "2014 年电影"
     assert repository.get(request_id).attempt_count == 1  # type: ignore[union-attr]
     assert b"transient-token" not in (tmp_path / "assistant.db").read_bytes()
+
+
+def test_reprocess_sanitizes_persisted_trigger_comment_like_initial_processing(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, _, _ = build_service(tmp_path / "assistant.db")
+    raw_comment = " \x00想看\x07" + "片" * 1200 + "\x1f尾 "
+    expected_comment = "想看" + "片" * 998
+    xhs.mentions = [mention(comment_text=raw_comment)]
+    resolver.outcomes = [ResolverError("first attempt"), resolution()]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+
+    service.reprocess(request_id)
+
+    assert len(resolver.requests) == 2
+    assert all(isinstance(request, MediaRequest) for request in resolver.requests)
+    assert [request.trigger_comment for request in resolver.requests] == [
+        expected_comment,
+        expected_comment,
+    ]
 
 
 def test_reprocess_without_snapshot_fails_without_accessing_xhs(tmp_path: Path) -> None:

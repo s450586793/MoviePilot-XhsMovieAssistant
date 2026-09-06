@@ -22,7 +22,7 @@ from .repository import (
     RequestRepository,
     StoredRequest,
 )
-from .request_builder import build_media_request
+from .request_builder import TEXT_LIMITS, build_media_request, sanitize_text
 from .templates import ReplyTemplates
 from .xhs import XhsContractError, XhsPausedError
 from .xhs_contracts import TransientMention
@@ -157,7 +157,10 @@ class AssistantService:
             request_id=f"xhs_{stored.mention_id}",
             source="xiaohongshu",
             intent="subscribe",
-            trigger_comment=stored.comment_text,
+            trigger_comment=sanitize_text(
+                stored.comment_text,
+                TEXT_LIMITS["comment"],
+            ),
             note=stored.note,
         )
         return self._resolve_media_request(request_id, media_request, None)
