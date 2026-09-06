@@ -418,8 +418,12 @@ class AssistantService:
             )
             return
 
-        if outcome.success:
-            self.repository.mark_reply(request_id, mention.comment_id)
+        if (
+            outcome.success
+            and isinstance(outcome.reply_id, str)
+            and outcome.reply_id.strip()
+        ):
+            self.repository.mark_reply(request_id, outcome.reply_id.strip())
             return
         self.repository.mark_reply(request_id, status=ReplyStatus.FAILED)
         if outcome.code in _REPLY_PAUSE_CODES:

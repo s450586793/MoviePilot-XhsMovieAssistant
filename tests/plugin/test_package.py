@@ -24,10 +24,15 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["version"] == XhsMovieAssistant.plugin_version
     assert item["icon"] == XhsMovieAssistant.plugin_icon
     assert item["author"] == XhsMovieAssistant.plugin_author
+    assert item["level"] == 1
     assert item["system_version"] == ">=2.15.6"
     assert item["v2"] is True
     assert item["v3"] is False
-    assert item["history"][f"v{XhsMovieAssistant.plugin_version}"]
+    assert item["history"] == {
+        f"v{XhsMovieAssistant.plugin_version}": (
+            "首个可测试版本，支持扫码、授权艾特、AI 识别、去重和订阅。"
+        )
+    }
 
 
 def test_market_icon_is_local_png_with_supported_dimensions() -> None:

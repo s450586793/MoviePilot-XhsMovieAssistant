@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from .xhs_contracts import TransientMention, parse_mentions_payload
 
 
 _MENTIONS_PATH = "/api/sns/web/v1/you/mentions"
+_REPLY_SUBMIT_PATH = "/api/sns/web/v1/comment/post"
 _MENTIONS_TIMEOUT_MS = 20_000
 _NOTE_TIMEOUT_MS = 15_000
 _REPLY_SCROLL_ROUNDS = 10
@@ -50,6 +52,7 @@ class ReplyOutcome:
     success: bool
     code: str | None = None
     message: str = ""
+    reply_id: str | None = None
 
 
 class XhsContractError(RuntimeError):
@@ -260,12 +263,11 @@ class XhsGateway:
                     return _reply_failure(
                         "SUBMIT_DISABLED", "The reply submit control is disabled"
                     )
-                submit_statuses: list[int] = []
+                submit_responses: list[Any] = []
 
                 def on_submit_response(response: Any) -> None:
-                    status = _response_status(response)
-                    if status in {403, 429}:
-                        submit_statuses.append(status)
+                    if _is_reply_submit_response(response):
+                        submit_responses.append(response)
 
                 page.on("response", on_submit_response)
                 try:
@@ -276,7 +278,7 @@ class XhsGateway:
                             "SUBMIT_FAILED", "The reply submission result is uncertain"
                         )
                     return _confirm_reply_submission(
-                        self._manager, page, input_locator, submit_statuses
+                        self._manager, page, submit_responses
                     )
                 finally:
                     page.remove_listener("response", on_submit_response)
@@ -456,7 +458,7 @@ def _structured_comments(value: object) -> tuple[str, ...]:
         text = _sanitize_text(raw, 1_000)
         if text:
             comments.append(text)
-    return tuple(comments[:10])
+    return tuple(comments)
 
 
 def _visible_comment_texts(page: Any) -> tuple[str, ...]:
@@ -468,7 +470,7 @@ def _visible_comment_texts(page: Any) -> tuple[str, ...]:
         return ()
     return tuple(
         text
-        for value in values[:10]
+        for value in values
         if (text := _sanitize_text(value, 1_000))
     )
 
@@ -509,7 +511,8 @@ def _find_comment(page: Any, comment_id: str) -> Any | None:
             return locator
         page.mouse.wheel(0, _REPLY_SCROLL_PIXELS)
         page.wait_for_timeout(_REPLY_WAIT_MS)
-    return None
+    locator = page.locator(selector).first
+    return locator if locator.count() > 0 else None
 
 
 def _css_identifier(value: str) -> str:
@@ -537,25 +540,17 @@ def _risk_outcome(manager: Any, page: Any, status: int | None) -> ReplyOutcome |
 def _confirm_reply_submission(
     manager: Any,
     page: Any,
-    input_locator: Any,
-    response_statuses: list[int],
+    submit_responses: list[Any],
 ) -> ReplyOutcome:
     deadline = monotonic() + (_REPLY_CONFIRM_TIMEOUT_MS / 1_000)
     remaining_ms = _REPLY_CONFIRM_TIMEOUT_MS
-    tentative_success = False
     while True:
-        while response_statuses:
-            risk = _risk_outcome(manager, page, response_statuses.pop(0))
-            if risk is not None:
-                return risk
+        if submit_responses:
+            return _reply_response_outcome(manager, page, submit_responses.pop(0))
         risk = _risk_outcome(manager, page, None)
         if risk is not None:
             return risk
-        if _reply_was_confirmed(page, input_locator):
-            tentative_success = True
         if remaining_ms <= 0 or monotonic() >= deadline:
-            if tentative_success:
-                return ReplyOutcome(success=True, message="Reply submitted")
             return _reply_failure(
                 "SUBMIT_UNCONFIRMED", "The reply submission could not be confirmed"
             )
@@ -564,21 +559,90 @@ def _confirm_reply_submission(
         remaining_ms -= wait_ms
 
 
-def _reply_was_confirmed(page: Any, input_locator: Any) -> bool:
-    try:
-        if input_locator.text_content(timeout=500) == "":
-            return True
-    except Exception:
-        pass
-    try:
-        return (
-            page.locator(
-                ".el-message--success:visible, [data-reply-success]:visible"
-            ).count()
-            > 0
+def _reply_response_outcome(manager: Any, page: Any, response: Any) -> ReplyOutcome:
+    status = _response_status(response)
+    if status in {401, 403}:
+        return _reply_failure("AUTH_REQUIRED", "Browser operation paused")
+    if status == 429:
+        return _reply_failure("RATE_LIMITED", "Browser operation paused")
+    risk = _risk_outcome(manager, page, status)
+    if risk is not None:
+        return risk
+    if status is None or not 200 <= status < 300:
+        return _reply_failure(
+            "TEMPORARY_FAILURE", "The reply service returned an unsuccessful status"
         )
+    try:
+        payload = response.json()
     except Exception:
+        return _reply_failure(
+            "SUBMIT_UNCONFIRMED", "The reply response could not be validated"
+        )
+    if not isinstance(payload, Mapping):
+        return _reply_failure(
+            "SUBMIT_UNCONFIRMED", "The reply response could not be validated"
+        )
+    pause_code = _reply_payload_pause_code(payload)
+    if pause_code is not None:
+        return _reply_failure(pause_code, "Browser operation paused")
+
+    success = payload.get("success")
+    code = payload.get("code")
+    zero_code = isinstance(code, int) and not isinstance(code, bool) and code == 0
+    if success is False or (code is not None and not zero_code):
+        return _reply_failure("TEMPORARY_FAILURE", "The reply was rejected")
+    if success is not True and not zero_code:
+        return _reply_failure(
+            "SUBMIT_UNCONFIRMED", "The reply response did not confirm success"
+        )
+    reply_id = _reply_id_from_payload(payload)
+    if reply_id is None:
+        return _reply_failure(
+            "SUBMIT_UNCONFIRMED", "The reply response omitted its identifier"
+        )
+    return ReplyOutcome(
+        success=True,
+        message="Reply submitted",
+        reply_id=reply_id,
+    )
+
+
+def _is_reply_submit_response(response: Any) -> bool:
+    try:
+        return urlsplit(str(response.url)).path == _REPLY_SUBMIT_PATH
+    except ValueError:
         return False
+
+
+def _reply_payload_pause_code(payload: Mapping[object, object]) -> str | None:
+    code = payload.get("code")
+    if isinstance(code, bool):
+        return None
+    if code == 300012:
+        return "XHS_RISK_CONTROL"
+    if code in {401, 403}:
+        return "AUTH_REQUIRED"
+    if code == 429:
+        return "RATE_LIMITED"
+    return None
+
+
+def _reply_id_from_payload(payload: Mapping[object, object]) -> str | None:
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        return None
+    comment = data.get("comment")
+    candidates = []
+    if isinstance(comment, Mapping):
+        candidates.extend(
+            comment.get(key) for key in ("id", "comment_id", "commentId")
+        )
+    candidates.extend(data.get(key) for key in ("comment_id", "commentId", "id"))
+    for candidate in candidates:
+        value = str(candidate) if isinstance(candidate, int) else candidate
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+            return value
+    return None
 
 
 def _ensure_risk_ok(manager: Any, page: Any, status: int | None) -> None:

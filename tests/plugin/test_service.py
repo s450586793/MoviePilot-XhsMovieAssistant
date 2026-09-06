@@ -123,7 +123,7 @@ class FakeXhs:
         if self.repository is not None:
             self.reply_call_statuses.append(self.repository.recent(1)[0].status)
         if not self.reply_outcomes:
-            return ReplyOutcome(success=True)
+            return ReplyOutcome(success=True, reply_id="reply-default")
         outcome = self.reply_outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -558,7 +558,13 @@ def test_reply_is_attempted_once_and_persisted_as_final(
         tmp_path / "assistant.db", enable_subscription=True, replies_enabled=True
     )
     xhs.mentions = [mention()]
-    xhs.reply_outcomes = [ReplyOutcome(success=success, code=None if success else "TIMEOUT")]
+    xhs.reply_outcomes = [
+        ReplyOutcome(
+            success=success,
+            reply_id="reply-m1" if success else None,
+            code=None if success else "TIMEOUT",
+        )
+    ]
     moviepilot.submit_outcomes = [
         SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
     ]
@@ -570,8 +576,27 @@ def test_reply_is_attempted_once_and_persisted_as_final(
     assert xhs.reply_calls == 1
     assert xhs.reply_call_statuses == [RequestStatus.SUBSCRIBED]
     assert stored.reply_status is (ReplyStatus.SENT if success else ReplyStatus.FAILED)
-    assert stored.reply_id == ("comment-m1" if success else None)
+    assert stored.reply_id == ("reply-m1" if success else None)
     assert len(notifications) == (1 if success else 2)
+
+
+def test_reply_success_without_returned_id_is_not_persisted_as_sent(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, _, moviepilot, _ = build_service(
+        tmp_path / "assistant.db", enable_subscription=True, replies_enabled=True
+    )
+    xhs.mentions = [mention()]
+    xhs.reply_outcomes = [ReplyOutcome(success=True)]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+
+    service.poll_once()
+
+    stored = repository.recent(1)[0]
+    assert stored.reply_status is ReplyStatus.FAILED
+    assert stored.reply_id is None
 
 
 def test_reply_exception_is_not_retried(tmp_path: Path) -> None:

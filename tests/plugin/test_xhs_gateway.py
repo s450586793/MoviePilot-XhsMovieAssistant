@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from xhsmovieassistant.browser import OperationResult
+from xhsmovieassistant.request_builder import build_media_request
 from xhsmovieassistant.xhs import (
     NoteDetail,
     ReplyOutcome,
@@ -18,6 +19,7 @@ from xhsmovieassistant.xhs_contracts import TransientMention
 MENTIONS_API_URL = (
     "https://edith.xiaohongshu.com/api/sns/web/v1/you/mentions?num=20&cursor="
 )
+REPLY_API_URL = "https://edith.xiaohongshu.com/api/sns/web/v1/comment/post"
 
 
 def mention_payload(count: int = 1) -> dict[str, object]:
@@ -157,6 +159,18 @@ class FakeResponse:
         return self.payload
 
 
+def successful_reply_response(reply_id: str = "reply-123") -> FakeResponse:
+    return FakeResponse(
+        REPLY_API_URL,
+        status=200,
+        payload={
+            "success": True,
+            "code": 0,
+            "data": {"comment": {"id": reply_id}},
+        },
+    )
+
+
 class FakeMouse:
     def __init__(self, page: "FakePage") -> None:
         self.page = page
@@ -234,8 +248,9 @@ class FakeLocator:
                 self.page.input_text = ""
             if self.page.submit_response_status is not None:
                 response = FakeResponse(
-                    "https://edith.xiaohongshu.com/api/sns/web/v1/comment/post",
+                    REPLY_API_URL,
                     status=self.page.submit_response_status,
+                    payload=self.page.submit_response_payload,
                 )
                 for callback in tuple(self.page.listeners):
                     callback(response)
@@ -279,6 +294,7 @@ class FakePage:
         self.keyboard_error: Exception | None = None
         self.submit_error: Exception | None = None
         self.submit_response_status: int | None = None
+        self.submit_response_payload: object = None
         self.post_submit_risk_code: str | None = None
         self.active_risk_code: str | None = None
         self.reply_success_after_pumps: int | None = 1
@@ -760,6 +776,39 @@ def test_fetch_note_uses_dom_only_for_content_fallback(
     assert not hasattr(detail, "sender_user_id")
 
 
+@pytest.mark.parametrize("comment_source", ["state", "dom"])
+def test_fetch_note_preserves_all_loaded_comments_until_relevance_ranking(
+    gateway: XhsGateway,
+    fake_page: FakePage,
+    comment_source: str,
+) -> None:
+    comments = [f"普通评论 {index}" for index in range(12)] + ["《星际穿越》 2014"]
+    note_comments = (
+        [{"content": comment} for comment in comments]
+        if comment_source == "state"
+        else []
+    )
+    fake_page.initial_state = {
+        "note /一": {
+            "note": {
+                "noteId": "note /一",
+                "title": "影视笔记",
+                "comments": note_comments,
+            }
+        }
+    }
+    if comment_source == "dom":
+        fake_page.dom_text_lists[
+            ".comment-item .content, .parent-comment .content"
+        ] = comments
+
+    detail = gateway.fetch_note(make_mention())
+    request = build_media_request(make_mention(), detail)
+
+    assert request.note.relevant_comments[0] == "《星际穿越》 2014"
+    assert len(request.note.relevant_comments) == 10
+
+
 def test_fetch_note_timeout_is_bounded_and_does_not_leak_token(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
@@ -803,25 +852,29 @@ def test_reply_finds_exact_comment_after_bounded_scrolling(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
     fake_page.comment_ids = {"target-1": 3}
+    fake_page.submit_response_status = 200
+    fake_page.submit_response_payload = successful_reply_response().payload
 
     outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
 
     assert outcome.success is True
+    assert outcome.reply_id == "reply-123"
     assert fake_page.scroll_count == 3
     assert fake_page.reply_clicks == 1
     assert fake_page.submit_clicks == 1
 
 
-def test_reply_reports_success_only_after_input_is_cleared(
+def test_reply_reports_success_only_after_non_risk_response_with_real_id(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
-    fake_page.reply_success_after_pumps = 2
+    fake_page.reply_success_after_pumps = None
+    fake_page.delayed_responses = [(2, successful_reply_response("reply-456"))]
 
     outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
 
     assert outcome.success is True
-    assert fake_page.post_submit_pumps >= 2
-    assert sum(fake_page.wait_timeouts) == 3_000
+    assert outcome.reply_id == "reply-456"
+    assert fake_page.event_pumps == 2
     assert fake_page.submit_clicks == 1
 
 
@@ -860,7 +913,7 @@ def test_reply_prefers_delayed_http_risk_over_synchronous_input_clear(
     assert fake_page.submit_clicks == 1
 
 
-def test_reply_waits_through_confirmation_window_for_tentative_input_clear(
+def test_reply_does_not_accept_input_clear_without_success_response(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
     fake_page.reply_clears_on_click = True
@@ -868,7 +921,8 @@ def test_reply_waits_through_confirmation_window_for_tentative_input_clear(
 
     outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
 
-    assert outcome.success is True
+    assert outcome.success is False
+    assert outcome.code == "SUBMIT_UNCONFIRMED"
     assert sum(fake_page.wait_timeouts) == 3_000
     assert fake_page.submit_clicks == 1
 
@@ -891,15 +945,11 @@ def test_reply_returns_failure_when_click_triggers_captcha(
 )
 def test_reply_returns_failure_when_click_response_is_http_risk(
     gateway: XhsGateway,
-    manager: FakeManager,
     fake_page: FakePage,
     status: int,
     code: str,
 ) -> None:
     fake_page.submit_response_status = status
-    manager.risk_results[status] = OperationResult(
-        success=False, code=code, message="post-submit risk", should_pause=True
-    )
 
     outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
 
@@ -954,12 +1004,75 @@ def test_reply_falls_back_to_keyboard_insert_and_submits_exactly_once(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
     fake_page.fill_error = RuntimeError("contenteditable fill unsupported")
+    fake_page.submit_response_status = 200
+    fake_page.submit_response_payload = successful_reply_response().payload
 
     outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
 
     assert outcome.success is True
+    assert outcome.reply_id == "reply-123"
     assert fake_page.filled_text is None
     assert fake_page.inserted_text == "固定模板回复"
+    assert fake_page.submit_clicks == 1
+
+
+def test_reply_checks_once_more_after_the_tenth_scroll(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.comment_ids = {"target-1": 10}
+    fake_page.submit_response_status = 200
+    fake_page.submit_response_payload = successful_reply_response(
+        "reply-final"
+    ).payload
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is True
+    assert outcome.reply_id == "reply-final"
+    assert fake_page.scroll_count == 10
+    assert fake_page.submit_clicks == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        FakeResponse(
+            REPLY_API_URL,
+            status=200,
+            payload={"success": True, "code": 0, "data": {}},
+        ),
+        FakeResponse(
+            REPLY_API_URL,
+            status=200,
+            payload={
+                "success": False,
+                "code": 1,
+                "data": {"comment": {"id": "reply-untrusted"}},
+            },
+        ),
+        FakeResponse(
+            REPLY_API_URL,
+            status=500,
+            payload={
+                "success": True,
+                "code": 0,
+                "data": {"comment": {"id": "reply-untrusted"}},
+            },
+        ),
+    ],
+)
+def test_reply_rejects_response_without_complete_non_risk_success_evidence(
+    gateway: XhsGateway,
+    fake_page: FakePage,
+    response: FakeResponse,
+) -> None:
+    fake_page.reply_success_after_pumps = None
+    fake_page.delayed_responses = [(1, response)]
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is False
+    assert outcome.reply_id is None
     assert fake_page.submit_clicks == 1
 
 
