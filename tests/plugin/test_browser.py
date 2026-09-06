@@ -409,11 +409,39 @@ def test_install_chromium_redaction_fails_closed_for_encoded_credentials(
 @pytest.mark.parametrize(
     "output",
     [
+        "https://downloads.example/a?xsec_token=topsecret",
         "https%3A%2F%2Fdownloads.example%2Fa%3Fxsec_token%3Dtopsecret",
         "https%253A%252F%252Fdownloads.example%252Fa%253Fapi_token%253Dtopsecret",
+        "https://downloads.example/a?access_token=topsecret",
+        "https://downloads.example/a?client-secret=topsecret",
     ],
 )
-def test_install_chromium_redacts_encoded_query_tokens_without_userinfo(
+def test_install_chromium_redacts_sensitive_query_tokens_without_userinfo(
+    tmp_path, monkeypatch, output: str
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout=output, stderr=""
+        ),
+    )
+
+    result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
+
+    assert result.message == "[REDACTED]"
+    assert "topsecret" not in result.message
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "https://[invalid/a?xsec_token=topsecret",
+        "https%3A%2F%2F%5Binvalid%2Fa%3Fxsec_token%3Dtopsecret",
+        "https%253A%252F%252F%255Binvalid%252Fa%253Fxsec_token%253Dtopsecret",
+    ],
+)
+def test_install_chromium_redacts_malformed_sensitive_query_urls(
     tmp_path, monkeypatch, output: str
 ) -> None:
     monkeypatch.setattr(
@@ -449,8 +477,14 @@ def test_install_chromium_preserves_normal_encoded_url(tmp_path, monkeypatch) ->
     "output",
     [
         "https://tokenizer.example/a?build=123",
+        "https%3A%2F%2Ftokenizer.example%2Fa%3Fbuild%3D123",
+        "https%253A%252F%252Ftokenizer.example%252Fa%253Fbuild%253D123",
         "https://downloads.example/token-cache?build=123",
+        "https%3A%2F%2Fdownloads.example%2Ftoken-cache%3Fbuild%3D123",
+        "https%253A%252F%252Fdownloads.example%252Ftoken-cache%253Fbuild%253D123",
         "https://monkey.example/a?build=123",
+        "https%3A%2F%2Fmonkey.example%2Fa%3Fbuild%3D123",
+        "https%253A%252F%252Fmonkey.example%252Fa%253Fbuild%253D123",
     ],
 )
 def test_install_chromium_preserves_sensitive_substrings_outside_query_keys(
@@ -466,6 +500,22 @@ def test_install_chromium_preserves_sensitive_substrings_outside_query_keys(
 
     result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
 
+    assert result.message == output
+
+
+def test_install_chromium_preserves_normal_non_url_output(tmp_path, monkeypatch) -> None:
+    output = "Chromium downloaded successfully"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout=output, stderr=""
+        ),
+    )
+
+    result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
+
+    assert result.success is True
     assert result.message == output
 
 

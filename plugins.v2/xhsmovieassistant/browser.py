@@ -405,7 +405,7 @@ def _has_sensitive_query(value: str) -> bool:
         try:
             query = urlsplit(match.group(0)).query
         except ValueError:
-            continue
+            return True
         if any(
             _SENSITIVE_QUERY_PATTERN.search(name)
             for name, _ in parse_qsl(query, keep_blank_values=True)
