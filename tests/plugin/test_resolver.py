@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+import threading
 import time
 from types import ModuleType, SimpleNamespace
 
@@ -235,6 +236,36 @@ def test_resolver_uses_sync_factory_messages_timeout_and_helper_extraction(
     assert observed["extracted"][1] is True
 
 
+def test_resolver_binds_timeout_into_supported_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    media_request_values: dict[str, object],
+) -> None:
+    observed: dict[str, object] = {}
+
+    class BoundLLM:
+        def invoke(self, messages: list[object], config: dict[str, object]) -> object:
+            observed["config"] = config
+            return SimpleNamespace(content=json.dumps(VALID_RESOLUTION, ensure_ascii=False))
+
+    class FakeLLM:
+        def bind(self, **kwargs: object) -> BoundLLM:
+            observed["bound"] = kwargs
+            return BoundLLM()
+
+    class FakeHelper:
+        extract_text_content = staticmethod(lambda content, fallback_to_string=False: content)
+
+    _install_runtime(monkeypatch, FakeHelper)
+
+    resolution = MediaResolver(
+        llm_factory=lambda: FakeLLM(), timeout_seconds=3
+    ).resolve(_request(media_request_values))
+
+    assert resolution.year == 2014
+    assert observed["bound"] == {"timeout": 3}
+    assert observed["config"] == {"configurable": {"timeout": 3}}
+
+
 def test_resolver_supports_async_factory_without_a_running_loop(
     monkeypatch: pytest.MonkeyPatch,
     media_request_values: dict[str, object],
@@ -366,33 +397,51 @@ def test_resolver_retries_parse_failure_once_then_succeeds(
     assert llm.call_count == 2
 
 
-def test_resolver_applies_a_real_timeout_to_blocking_invoke(
+def test_resolver_keeps_one_live_invoke_after_timeout_without_starting_retries(
     monkeypatch: pytest.MonkeyPatch,
     media_request_values: dict[str, object],
 ) -> None:
-    class SlowLLM:
+    entered = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+
+    class BlockingLLM:
         def __init__(self) -> None:
             self.call_count = 0
 
         def invoke(self, messages: list[object], config: dict[str, object]) -> object:
             self.call_count += 1
-            time.sleep(0.2)
-            return SimpleNamespace(content=json.dumps(VALID_RESOLUTION))
+            entered.set()
+            try:
+                release.wait(timeout=1)
+                return SimpleNamespace(content=json.dumps(VALID_RESOLUTION))
+            finally:
+                stopped.set()
 
     class FakeHelper:
         extract_text_content = staticmethod(lambda content, fallback_to_string=False: content)
 
-    llm = SlowLLM()
+    llm = BlockingLLM()
     _install_runtime(monkeypatch, FakeHelper)
+    resolver = MediaResolver(llm_factory=lambda: llm, timeout_seconds=0.02)
     started = time.monotonic()
 
-    with pytest.raises(ResolverError, match="^LLM 识别失败$"):
-        MediaResolver(llm_factory=lambda: llm, timeout_seconds=0.02).resolve(
-            _request(media_request_values)
-        )
+    try:
+        with pytest.raises(ResolverError, match="^LLM 识别失败$"):
+            resolver.resolve(_request(media_request_values))
 
-    assert time.monotonic() - started < 0.15
-    assert llm.call_count == 2
+        assert entered.is_set()
+        assert time.monotonic() - started < 0.15
+        assert llm.call_count == 1
+
+        for _ in range(3):
+            with pytest.raises(ResolverError, match="^LLM 识别失败$"):
+                resolver.resolve(_request(media_request_values))
+
+        assert llm.call_count == 1
+    finally:
+        release.set()
+        assert stopped.wait(timeout=1)
 
 
 def test_resolver_redacts_parse_response_and_prompt_from_error(
