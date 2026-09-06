@@ -374,15 +374,34 @@ def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp
                     "2026-09-07T12:01:00+00:00",
                 ),
             )
+        connection.execute(
+            "CREATE UNIQUE INDEX ux_xhs_requests_request_key ON xhs_requests (request_key)"
+        )
 
     with pytest.raises(RuntimeError, match="request key collision"):
         RequestRepository(database_path)
 
     with sqlite3.connect(database_path) as connection:
         rows = connection.execute(
-            "SELECT mention_id, status, reply_status, reply_id FROM xhs_requests ORDER BY id"
+            """
+            SELECT mention_id, status, reply_status, reply_id, request_key
+            FROM xhs_requests ORDER BY id
+            """
         ).fetchall()
-    assert rows == [("m1", "NEW", "PENDING", None), ("m2", "SUBSCRIBED", "SENT", "reply-2")]
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(xhs_requests)")}
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(xhs_requests)")}
+    assert rows == [
+        ("m1", "NEW", "PENDING", None, _phase1_request_key("note-1", "user-1", first_text)),
+        (
+            "m2",
+            "SUBSCRIBED",
+            "SENT",
+            "reply-2",
+            f"{_phase1_request_key('note-1', 'user-1', duplicate_text)}m2",
+        ),
+    ]
+    assert "ux_xhs_requests_request_key" in indexes
+    assert {"title", "original_title", "media_source", "tmdb_id"}.isdisjoint(columns)
 
 
 def test_repository_strips_or_redacts_sensitive_persistence_inputs(tmp_path) -> None:
@@ -439,6 +458,17 @@ def test_repository_persists_only_known_stable_error_codes(tmp_path) -> None:
 
     assert failed.error == "AUTH_REQUIRED"
     assert paused.pause_code == "AUTH_REQUIRED"
+
+
+def test_repository_persists_planned_risk_control_code_and_redacts_unknown_code(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+
+    failed = repo.transition(saved.request.id, RequestStatus.FAILED, error="XHS_RISK_CONTROL")
+    paused = repo.set_runtime_state(BrowserState.PAUSED, pause_code="UNKNOWN_SAFE_SHAPE")
+
+    assert failed.error == "XHS_RISK_CONTROL"
+    assert paused.pause_code == "REDACTED"
 
 
 def _barrier_after_two_request_reads(monkeypatch) -> dict[str, int]:

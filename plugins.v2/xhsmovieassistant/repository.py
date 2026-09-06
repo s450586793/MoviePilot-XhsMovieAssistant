@@ -57,6 +57,7 @@ SAFE_PERSISTED_CODES = frozenset(
         "NETWORK_ERROR",
         "UPSTREAM_ERROR",
         "TEMPORARY_FAILURE",
+        "XHS_RISK_CONTROL",
     }
 )
 RECOVERABLE_STATUSES = {
@@ -409,6 +410,7 @@ class RequestRepository:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS xhs_requests (
