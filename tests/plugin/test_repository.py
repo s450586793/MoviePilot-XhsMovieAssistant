@@ -63,6 +63,39 @@ def test_save_mention_is_idempotent_by_mention_and_request_key(tmp_path) -> None
     assert len(repo.recent(10)) == 1
 
 
+def test_save_mention_rejects_split_unique_key_collision(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    first = make_mention("mention-a", "想看星际穿越")
+    second = NewMention(
+        note_id="note-2",
+        note_url="https://www.xiaohongshu.com/explore/note-2",
+        mention_id="mention-b",
+        sender_user_id=first.sender_user_id,
+        comment_id="comment-b",
+        comment_text="想看沙丘",
+        created_at=first.created_at,
+    )
+    repo.save_mention(first)
+    repo.save_mention(second)
+    split_collision = NewMention(
+        note_id=second.note_id,
+        note_url=second.note_url,
+        mention_id=first.mention_id,
+        sender_user_id=second.sender_user_id,
+        comment_id="comment-collision",
+        comment_text=second.comment_text,
+        created_at=first.created_at,
+    )
+
+    with pytest.raises(RuntimeError, match="different requests"):
+        repo.save_mention(split_collision)
+
+    assert {item.mention_id for item in repo.recent(10)} == {
+        "mention-a",
+        "mention-b",
+    }
+
+
 def test_transition_rejects_invalid_state_jump(tmp_path) -> None:
     repo = RequestRepository(tmp_path / "app.db")
     saved = repo.save_mention(make_mention())

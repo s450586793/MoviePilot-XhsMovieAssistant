@@ -16,6 +16,7 @@ from .models import (
     Resolution,
 )
 from .repository import (
+    IdempotencyConflict,
     InvalidTransition,
     NewMention,
     RequestNotFound,
@@ -111,7 +112,10 @@ class AssistantService:
         self._consecutive_poll_failures = 0
         results: list[ProcessingResult] = []
         for mention in mentions:
-            result = self.process_request(mention)
+            try:
+                result = self.process_request(mention)
+            except IdempotencyConflict:
+                continue
             if result is not None:
                 results.append(result)
             if self.repository.get_runtime_state().browser_state is BrowserState.PAUSED:
@@ -139,7 +143,13 @@ class AssistantService:
             )
         )
         if not saved.created:
-            return None
+            recovered = (
+                saved.request.status is RequestStatus.NEW
+                and saved.request.attempt_count > 0
+                and saved.request.mention_id == mention.mention_id
+            )
+            if not recovered:
+                return None
 
         return self._process_saved(saved.request.id, mention)
 

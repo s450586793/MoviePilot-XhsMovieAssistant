@@ -31,6 +31,10 @@ class RequestNotFound(LookupError):
     """Raised when a mutation references no persisted request."""
 
 
+class IdempotencyConflict(RuntimeError):
+    """Raised when independent unique keys identify different requests."""
+
+
 ALLOWED_TRANSITIONS: dict[RequestStatus, set[RequestStatus]] = {
     RequestStatus.NEW: {RequestStatus.FETCHED, RequestStatus.IGNORED, RequestStatus.FAILED},
     RequestStatus.FETCHED: {RequestStatus.RESOLVING, RequestStatus.FAILED},
@@ -185,15 +189,27 @@ class RequestRepository:
                 ).fetchone()
                 created = True
             else:
-                row = connection.execute(
-                    """
-                    SELECT * FROM xhs_requests
-                    WHERE mention_id = ? OR request_key = ?
-                    ORDER BY CASE WHEN mention_id = ? THEN 0 ELSE 1 END
-                    LIMIT 1
-                    """,
-                    (mention.mention_id, request_key, mention.mention_id),
+                mention_row = connection.execute(
+                    "SELECT * FROM xhs_requests WHERE mention_id = ?",
+                    (mention.mention_id,),
                 ).fetchone()
+                request_row = connection.execute(
+                    "SELECT * FROM xhs_requests WHERE request_key = ?",
+                    (request_key,),
+                ).fetchone()
+                if mention_row is not None and mention_row["request_key"] != request_key:
+                    raise IdempotencyConflict(
+                        "mention and request keys identify different requests"
+                    )
+                if (
+                    mention_row is not None
+                    and request_row is not None
+                    and mention_row["id"] != request_row["id"]
+                ):
+                    raise IdempotencyConflict(
+                        "mention and request keys identify different requests"
+                    )
+                row = mention_row or request_row
                 created = False
         if row is None:
             raise RuntimeError("Persisted request could not be read back")
