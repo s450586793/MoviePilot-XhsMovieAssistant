@@ -9,6 +9,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from .models import (
     BrowserState,
+    MediaRequest,
     ProcessingResult,
     ReplyStatus,
     RequestStatus,
@@ -146,7 +147,20 @@ class AssistantService:
         """Requeue and process one eligible request using durable safe fields."""
         stored = self._require_authorized(request_id)
         self.repository.requeue(request_id, authenticated=True)
-        return self._process_saved(request_id, self._mention_from_stored(stored))
+        if stored.note is None:
+            return self._complete(
+                request_id,
+                None,
+                self._fail(request_id, "UPSTREAM_ERROR"),
+            )
+        media_request = MediaRequest(
+            request_id=f"xhs_{stored.mention_id}",
+            source="xiaohongshu",
+            intent="subscribe",
+            trigger_comment=stored.comment_text,
+            note=stored.note,
+        )
+        return self._resolve_media_request(request_id, media_request, None)
 
     def ignore(self, request_id: int) -> StoredRequest:
         """Mark a new or manually requeueable request as ignored."""
@@ -168,11 +182,15 @@ class AssistantService:
             stored = self.repository.requeue(request_id, authenticated=True)
         if stored.status is not RequestStatus.NEW:
             raise InvalidTransition(f"Cannot manually resolve {stored.status.value}")
-        self.repository.transition(request_id, RequestStatus.FETCHED)
+        self.repository.transition(
+            request_id,
+            RequestStatus.FETCHED,
+            note=stored.note,
+        )
         self.repository.transition(request_id, RequestStatus.RESOLVING)
         return self._process_resolution(
             request_id,
-            self._mention_from_stored(stored),
+            None,
             resolution,
         )
 
@@ -205,7 +223,19 @@ class AssistantService:
                 mention,
                 self._fail(request_id, "UPSTREAM_ERROR"),
             )
-        self.repository.transition(request_id, RequestStatus.FETCHED)
+        return self._resolve_media_request(request_id, media_request, mention)
+
+    def _resolve_media_request(
+        self,
+        request_id: int,
+        media_request: MediaRequest,
+        mention: TransientMention | None,
+    ) -> ProcessingResult:
+        self.repository.transition(
+            request_id,
+            RequestStatus.FETCHED,
+            note=media_request.note,
+        )
         self.repository.transition(request_id, RequestStatus.RESOLVING)
         try:
             resolution = self.resolver.resolve(media_request)
@@ -220,7 +250,7 @@ class AssistantService:
     def _process_resolution(
         self,
         request_id: int,
-        mention: TransientMention,
+        mention: TransientMention | None,
         resolution: Resolution,
     ) -> ProcessingResult:
         if resolution.status == "not_media":
@@ -289,7 +319,7 @@ class AssistantService:
     def _finish_resolution(
         self,
         request_id: int,
-        mention: TransientMention,
+        mention: TransientMention | None,
         status: RequestStatus,
         resolution: Resolution,
     ) -> ProcessingResult:
@@ -307,14 +337,15 @@ class AssistantService:
     def _complete(
         self,
         request_id: int,
-        mention: TransientMention,
+        mention: TransientMention | None,
         result: ProcessingResult,
     ) -> ProcessingResult:
         self._safe_notify(
             "小红书影视助手",
             f"请求 {request_id} 处理结果：{result.status.value}",
         )
-        self._reply(request_id, mention, result)
+        if mention is not None:
+            self._reply(request_id, mention, result)
         return result
 
     def _reply(
@@ -383,17 +414,6 @@ class AssistantService:
         if stored.sender_user_id not in self.authorized_user_ids:
             raise PermissionError("Request does not belong to an authorized sender")
         return stored
-
-    def _mention_from_stored(self, stored: StoredRequest) -> TransientMention:
-        return TransientMention(
-            mention_id=stored.mention_id,
-            sender_user_id=stored.sender_user_id,
-            comment_id=stored.comment_id,
-            comment_text=stored.comment_text,
-            note_id=stored.note_id,
-            xsec_token="",
-            created_at=stored.created_at,
-        )
 
     def _note_url(self, note_id: str) -> str:
         parsed = urlsplit(self.site_url)

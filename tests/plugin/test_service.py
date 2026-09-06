@@ -7,12 +7,13 @@ import pytest
 from xhsmovieassistant.models import (
     BrowserState,
     MediaMatch,
+    MediaRequest,
     ReplyStatus,
     RequestStatus,
     Resolution,
 )
 from xhsmovieassistant.moviepilot import MatchDecision, SubscriptionOutcome
-from xhsmovieassistant.repository import RequestRepository
+from xhsmovieassistant.repository import NewMention, RequestRepository
 from xhsmovieassistant.resolver import ResolverError
 from xhsmovieassistant.service import AssistantService
 from xhsmovieassistant.xhs import (
@@ -100,6 +101,8 @@ class FakeXhs:
         self.fetch_note_calls += 1
         if self.repository is not None:
             self.note_call_statuses.append(self.repository.recent(1)[0].status)
+        if not item.xsec_token:
+            raise AssertionError("fetch_note requires a transient xsec_token")
         failure = self.note_failures.get(item.mention_id)
         if failure is not None:
             raise failure
@@ -525,9 +528,43 @@ def test_reprocess_requeues_failed_request_without_persisting_token(tmp_path: Pa
 
     assert result.status is RequestStatus.DRY_RUN_MATCHED
     assert resolver.calls == 2
-    assert xhs.fetch_note_calls == 2
+    assert xhs.fetch_note_calls == 1
+    assert isinstance(resolver.requests[1], MediaRequest)
+    assert resolver.requests[1].note.title == "星际穿越"
+    assert resolver.requests[1].note.content == "2014 年电影"
     assert repository.get(request_id).attempt_count == 1  # type: ignore[union-attr]
     assert b"transient-token" not in (tmp_path / "assistant.db").read_bytes()
+
+
+def test_reprocess_without_snapshot_fails_without_accessing_xhs(tmp_path: Path) -> None:
+    service, repository, xhs, resolver, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db"
+    )
+    saved = repository.save_mention(
+        NewMention(
+            note_id="legacy-note",
+            note_url="https://www.xiaohongshu.com/explore/legacy-note",
+            mention_id="legacy-mention",
+            sender_user_id="authorized-user",
+            comment_id="legacy-comment",
+            comment_text="想看",
+            created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        )
+    )
+    repository.transition(saved.request.id, RequestStatus.FAILED, error="UPSTREAM_ERROR")
+
+    result = service.reprocess(saved.request.id)
+
+    stored = repository.get(saved.request.id)
+    assert result.status is RequestStatus.FAILED
+    assert stored is not None
+    assert stored.status is RequestStatus.FAILED
+    assert stored.error == "UPSTREAM_ERROR"
+    assert stored.attempt_count == 1
+    assert xhs.fetch_note_calls == 0
+    assert resolver.calls == 0
+    assert moviepilot.calls == 0
+    assert len(notifications) == 1
 
 
 def test_ignore_requeues_a_confirmation_before_marking_ignored(tmp_path: Path) -> None:

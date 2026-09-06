@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .models import BrowserState, MediaMatch, ReplyStatus, RequestStatus, Resolution
+from .models import (
+    BrowserState,
+    MediaMatch,
+    NoteContext,
+    ReplyStatus,
+    RequestStatus,
+    Resolution,
+)
 
 
 class InvalidTransition(ValueError):
@@ -95,6 +102,7 @@ class StoredRequest:
     created_at: datetime
     updated_at: datetime
     status: RequestStatus
+    note: NoteContext | None
     title: str | None
     original_title: str | None
     media_type: str | None
@@ -216,6 +224,7 @@ class RequestRepository:
         target: RequestStatus,
         *,
         error: str | None = None,
+        note: NoteContext | None = None,
         resolution: Resolution | None = None,
         match: MediaMatch | None = None,
         subscription_id: str | None = None,
@@ -224,6 +233,8 @@ class RequestRepository:
         """Advance one request through the explicit forward-only state machine."""
         if not isinstance(target, RequestStatus):
             raise TypeError("target must be a RequestStatus")
+        if note is not None and not isinstance(note, NoteContext):
+            raise TypeError("note must be a NoteContext")
         if resolution is not None and not isinstance(resolution, Resolution):
             raise TypeError("resolution must be a Resolution")
         if match is not None and not isinstance(match, MediaMatch):
@@ -234,9 +245,13 @@ class RequestRepository:
             current = RequestStatus(row["status"])
             if target not in ALLOWED_TRANSITIONS.get(current, set()):
                 raise InvalidTransition(f"Cannot transition {current.value} to {target.value}")
+            if note is not None and target is not RequestStatus.FETCHED:
+                raise ValueError("note snapshot can only be saved with FETCHED")
             values: dict[str, Any] = {"status": target.value, "updated_at": timestamp}
             if error is not None:
                 values["error"] = _safe_persisted_code(error)
+            if note is not None:
+                values["note_snapshot"] = _serialize_note(note)
             if subscription_id is not None:
                 values["subscription_id"] = subscription_id
             if resolution is not None:
@@ -425,6 +440,7 @@ class RequestRepository:
                     created_at TEXT NOT NULL,
                     updated_at TEXT,
                     status TEXT NOT NULL,
+                    note_snapshot TEXT,
                     title TEXT,
                     original_title TEXT,
                     media_type TEXT,
@@ -487,6 +503,7 @@ _MIGRATION_COLUMNS = {
     "comment_id": "TEXT",
     "request_key": "TEXT",
     "updated_at": "TEXT",
+    "note_snapshot": "TEXT",
     "title": "TEXT",
     "original_title": "TEXT",
     "media_type": "TEXT",
@@ -637,6 +654,11 @@ def _safe_persisted_code(value: str | None) -> str | None:
     return value if value in SAFE_PERSISTED_CODES else "REDACTED"
 
 
+def _serialize_note(note: NoteContext) -> str:
+    safe_note = note.model_copy(update={"url": _safe_note_url(note.url)})
+    return safe_note.model_dump_json()
+
+
 def _resolution_values(resolution: Resolution) -> dict[str, Any]:
     return {
         "title": resolution.title or None,
@@ -670,7 +692,8 @@ def _request_from_row(row: sqlite3.Row) -> StoredRequest:
         comment_id=row["comment_id"], comment_text=row["comment_text"],
         request_key=row["request_key"], created_at=_parse_datetime(row["created_at"], "created_at"),
         updated_at=_parse_datetime(row["updated_at"], "updated_at"),
-        status=RequestStatus(row["status"]), title=row["title"],
+        status=RequestStatus(row["status"]), note=_note_from_row(row["note_snapshot"]),
+        title=row["title"],
         original_title=row["original_title"], media_type=row["media_type"], year=row["year"],
         season=row["season"], confidence=row["confidence"],
         resolution_reason=row["resolution_reason"], media_source=row["media_source"],
@@ -680,6 +703,15 @@ def _request_from_row(row: sqlite3.Row) -> StoredRequest:
         replied_at=_parse_datetime(row["replied_at"], "replied_at", required=False),
         attempt_count=row["attempt_count"],
     )
+
+
+def _note_from_row(value: Any) -> NoteContext | None:
+    if value is None:
+        return None
+    try:
+        return NoteContext.model_validate_json(value)
+    except Exception:
+        raise RuntimeError("Persisted request has an invalid note snapshot") from None
 
 
 def _runtime_state_from_row(row: sqlite3.Row) -> RuntimeState:

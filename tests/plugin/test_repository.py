@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ import xhsmovieassistant.repository as repository_module
 from xhsmovieassistant.models import (
     BrowserState,
     MediaMatch,
+    NoteContext,
     ReplyStatus,
     RequestStatus,
     Resolution,
@@ -33,6 +35,18 @@ def make_mention(
         comment_id="comment-1",
         comment_text=comment_text,
         created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+
+
+def make_note_context() -> NoteContext:
+    return NoteContext(
+        id="note-1",
+        url="https://www.xiaohongshu.com/explore/note-1",
+        type="video",
+        title="星际穿越",
+        content="2014 年电影",
+        author="作者",
+        relevant_comments=["这部电影叫《星际穿越》"],
     )
 
 
@@ -92,6 +106,86 @@ def test_transition_persists_resolution_match_and_explicit_enums(tmp_path) -> No
 
     with pytest.raises(TypeError):
         repo.transition(saved.request.id, "FAILED")  # type: ignore[arg-type]
+
+
+def test_fetched_transition_atomically_round_trips_typed_note_snapshot(tmp_path) -> None:
+    database_path = tmp_path / "app.db"
+    repo = RequestRepository(database_path)
+    saved = repo.save_mention(make_mention())
+    note = make_note_context()
+
+    fetched = repo.transition(saved.request.id, RequestStatus.FETCHED, note=note)
+
+    assert fetched.note == note
+    assert repo.get(saved.request.id).note == note  # type: ignore[union-attr]
+    with sqlite3.connect(database_path) as connection:
+        raw_snapshot = connection.execute(
+            "SELECT note_snapshot FROM xhs_requests WHERE id = ?",
+            (saved.request.id,),
+        ).fetchone()[0]
+    assert json.loads(raw_snapshot) == {
+        "id": "note-1",
+        "url": "https://www.xiaohongshu.com/explore/note-1",
+        "type": "video",
+        "title": "星际穿越",
+        "content": "2014 年电影",
+        "author": "作者",
+        "relevant_comments": ["这部电影叫《星际穿越》"],
+    }
+
+
+def test_failed_fetched_cas_does_not_write_note_snapshot(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+
+    with pytest.raises(InvalidTransition):
+        repo.transition(
+            saved.request.id,
+            RequestStatus.RESOLVING,
+            note=make_note_context(),
+        )
+
+    unchanged = repo.get(saved.request.id)
+    assert unchanged is not None
+    assert unchanged.status is RequestStatus.NEW
+    assert unchanged.note is None
+
+
+def test_note_snapshot_rejects_untyped_data_before_transition(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+
+    with pytest.raises(TypeError, match="NoteContext"):
+        repo.transition(
+            saved.request.id,
+            RequestStatus.FETCHED,
+            note={"id": "note-1", "xsec_token": "secret"},  # type: ignore[arg-type]
+        )
+
+    unchanged = repo.get(saved.request.id)
+    assert unchanged is not None
+    assert unchanged.status is RequestStatus.NEW
+    assert unchanged.note is None
+
+
+def test_note_snapshot_strips_navigation_credentials_from_url(tmp_path) -> None:
+    database_path = tmp_path / "app.db"
+    repo = RequestRepository(database_path)
+    saved = repo.save_mention(make_mention())
+    note = NoteContext(
+        id="note-1",
+        url=(
+            "https://www.xiaohongshu.com/explore/note-1"
+            "?xsec_token=credential#private"
+        ),
+        title="星际穿越",
+    )
+
+    fetched = repo.transition(saved.request.id, RequestStatus.FETCHED, note=note)
+
+    assert fetched.note is not None
+    assert fetched.note.url == "https://www.xiaohongshu.com/explore/note-1"
+    assert b"credential" not in database_path.read_bytes()
 
 
 def test_requeue_requires_authentication_and_only_permitted_terminal_states(tmp_path) -> None:
@@ -194,7 +288,14 @@ def test_initialization_migrates_legacy_schema_and_configures_private_wal_databa
         columns = {row[1] for row in connection.execute("PRAGMA table_info(xhs_requests)")}
     assert journal_mode == "wal"
     assert {"ux_xhs_requests_mention_id", "ux_xhs_requests_request_key"} <= indexes
-    assert {"request_key", "comment_id", "reply_status", "attempt_count", "updated_at"} <= columns
+    assert {
+        "request_key",
+        "comment_id",
+        "note_snapshot",
+        "reply_status",
+        "attempt_count",
+        "updated_at",
+    } <= columns
 
 
 def test_migration_keeps_existing_legacy_rows_readable(tmp_path) -> None:
@@ -229,6 +330,7 @@ def test_migration_keeps_existing_legacy_rows_readable(tmp_path) -> None:
     assert migrated.updated_at == datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
     assert migrated.reply_status is ReplyStatus.PENDING
     assert migrated.attempt_count == 0
+    assert migrated.note is None
 
 
 def test_get_and_recent_validate_requests_and_limit(tmp_path) -> None:
