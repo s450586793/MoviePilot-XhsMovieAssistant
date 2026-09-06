@@ -297,7 +297,21 @@ def test_mark_reply_persists_failure_and_keeps_sent_reply_terminal(tmp_path) -> 
         repo.mark_reply(sent.request.id, status=ReplyStatus.FAILED)
 
 
-def test_migration_rekeys_real_phase1_schema_and_discards_semantic_collision(tmp_path) -> None:
+def test_mark_reply_rejects_pending_before_writing_reply_metadata(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+
+    with pytest.raises(ValueError):
+        repo.mark_reply(saved.request.id, status=ReplyStatus.PENDING)
+
+    unchanged = repo.get(saved.request.id)
+    assert unchanged is not None
+    assert unchanged.reply_status is ReplyStatus.PENDING
+    assert unchanged.reply_id is None
+    assert unchanged.replied_at is None
+
+
+def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp_path) -> None:
     database_path = tmp_path / "phase1.db"
     first_text = "想看 星际穿越"
     duplicate_text = "想看　星际穿越"
@@ -326,14 +340,22 @@ def test_migration_rekeys_real_phase1_schema_and_discards_semantic_collision(tmp
                 mp_id TEXT,
                 confidence REAL,
                 error TEXT,
-                processed_at TEXT
+                processed_at TEXT,
+                reply_status TEXT NOT NULL DEFAULT 'PENDING',
+                reply_id TEXT,
+                replied_at TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT
             )
             """
         )
         connection.execute(
             "CREATE UNIQUE INDEX ux_xhs_requests_mention_id ON xhs_requests (mention_id)"
         )
-        for mention_id, comment_text in (("m1", first_text), ("m2", duplicate_text)):
+        for mention_id, comment_text, status, reply_status, reply_id in (
+            ("m1", first_text, "NEW", "PENDING", None),
+            ("m2", duplicate_text, "SUBSCRIBED", "SENT", "reply-2"),
+        ):
             old_key = _phase1_request_key("note-1", "user-1", comment_text)
             if mention_id == "m2":
                 old_key = f"{old_key}{mention_id}"
@@ -341,23 +363,26 @@ def test_migration_rekeys_real_phase1_schema_and_discards_semantic_collision(tmp
                 """
                 INSERT INTO xhs_requests (
                     note_id, note_url, mention_id, sender_user_id, comment_id, comment_text,
-                    created_at, status, request_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, status, request_key, reply_status, reply_id, replied_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "note-1", "https://example.test/note-1?xsec_token=secret", mention_id, "user-1",
                     f"comment-{mention_id}", comment_text, "2026-09-07T12:00:00+00:00",
-                    "NEW", old_key,
+                    status, old_key, reply_status, reply_id, "2026-09-07T12:01:00+00:00",
+                    "2026-09-07T12:01:00+00:00",
                 ),
             )
 
-    repo = RequestRepository(database_path)
-    repeated = repo.save_mention(make_mention("m3", duplicate_text))
+    with pytest.raises(RuntimeError, match="request key collision"):
+        RequestRepository(database_path)
 
-    assert repeated.created is False
-    assert len(repo.recent(10)) == 1
-    assert repeated.request.mention_id == "m1"
-    assert repeated.request.note_url == "https://example.test/note-1"
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT mention_id, status, reply_status, reply_id FROM xhs_requests ORDER BY id"
+        ).fetchall()
+    assert rows == [("m1", "NEW", "PENDING", None), ("m2", "SUBSCRIBED", "SENT", "reply-2")]
 
 
 def test_repository_strips_or_redacts_sensitive_persistence_inputs(tmp_path) -> None:
@@ -388,6 +413,32 @@ def test_repository_strips_or_redacts_sensitive_persistence_inputs(tmp_path) -> 
             for value in row
         )
     assert "secret" not in persisted
+
+
+@pytest.mark.parametrize(
+    "unsafe_value",
+    ["sk-live-abc123", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature", "request failed"],
+)
+def test_repository_redacts_non_code_error_and_pause_values(tmp_path, unsafe_value: str) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+
+    failed = repo.transition(saved.request.id, RequestStatus.FAILED, error=unsafe_value)
+    paused = repo.set_runtime_state(BrowserState.PAUSED, pause_code=unsafe_value)
+
+    assert failed.error == "REDACTED"
+    assert paused.pause_code == "REDACTED"
+
+
+def test_repository_persists_only_known_stable_error_codes(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+
+    failed = repo.transition(saved.request.id, RequestStatus.FAILED, error="AUTH_REQUIRED")
+    paused = repo.set_runtime_state(BrowserState.PAUSED, pause_code="AUTH_REQUIRED")
+
+    assert failed.error == "AUTH_REQUIRED"
+    assert paused.pause_code == "AUTH_REQUIRED"
 
 
 def _barrier_after_two_request_reads(monkeypatch) -> dict[str, int]:

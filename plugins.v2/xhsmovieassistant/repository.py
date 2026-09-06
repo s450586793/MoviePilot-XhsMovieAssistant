@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import unicodedata
 from dataclasses import dataclass
@@ -48,6 +47,18 @@ REQUEUEABLE_STATUSES = {
     RequestStatus.NEED_CONFIRMATION,
     RequestStatus.DRY_RUN_MATCHED,
 }
+SAFE_PERSISTED_CODES = frozenset(
+    {
+        "AUTH_REQUIRED",
+        "LOGIN_REQUIRED",
+        "SESSION_EXPIRED",
+        "BROWSER_UNAVAILABLE",
+        "RATE_LIMITED",
+        "NETWORK_ERROR",
+        "UPSTREAM_ERROR",
+        "TEMPORARY_FAILURE",
+    }
+)
 RECOVERABLE_STATUSES = {
     RequestStatus.FETCHED,
     RequestStatus.RESOLVING,
@@ -279,6 +290,8 @@ class RequestRepository:
         """Atomically record one reply delivery outcome from the pending state."""
         if not isinstance(status, ReplyStatus):
             raise TypeError("status must be a ReplyStatus")
+        if status not in {ReplyStatus.SENT, ReplyStatus.FAILED}:
+            raise ValueError("status must be ReplyStatus.SENT or ReplyStatus.FAILED")
         if status is ReplyStatus.SENT and (
             not isinstance(reply_id, str) or not reply_id.strip()
         ):
@@ -519,21 +532,15 @@ def _rekey_phase1_requests(connection: sqlite3.Connection) -> None:
     ).fetchall()
     seen_keys: set[str] = set()
     surviving: list[tuple[str, int]] = []
-    duplicate_ids: list[int] = []
     for row in rows:
         key = _request_key_values(
             row["note_id"], row["sender_user_id"], row["comment_text"]
         )
         if key in seen_keys:
-            duplicate_ids.append(row["id"])
+            raise RuntimeError("phase 1 request key collision detected")
         else:
             seen_keys.add(key)
             surviving.append((key, row["id"]))
-    if duplicate_ids:
-        connection.executemany(
-            "DELETE FROM xhs_requests WHERE id = ?",
-            ((request_id,) for request_id in duplicate_ids),
-        )
     connection.executemany(
         "UPDATE xhs_requests SET request_key = ? WHERE id = ?", surviving
     )
@@ -625,12 +632,7 @@ def _safe_persisted_code(value: str | None) -> str | None:
         return None
     if not isinstance(value, str):
         raise TypeError("persisted code must be a string")
-    if (
-        not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}", value)
-        or re.search(r"token|key|cookie|secret|password|authorization", value, re.IGNORECASE)
-    ):
-        return "REDACTED"
-    return value
+    return value if value in SAFE_PERSISTED_CODES else "REDACTED"
 
 
 def _resolution_values(resolution: Resolution) -> dict[str, Any]:
