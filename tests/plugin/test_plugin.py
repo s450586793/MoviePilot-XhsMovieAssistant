@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-import threading
 
 import pytest
 import xhsmovieassistant as entrypoint
@@ -25,6 +25,40 @@ def _components(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(content, list):
             found.extend(_components(content))
     return found
+
+
+class _RuntimeRepository:
+    def __init__(self) -> None:
+        self.state = SimpleNamespace(
+            browser_state=entrypoint.BrowserState.READY,
+            pause_code=None,
+            paused_at=None,
+            pause_notified=False,
+        )
+        self.transitions = []
+
+    def get_runtime_state(self):
+        return self.state
+
+    def set_runtime_state(self, browser_state, **kwargs):
+        self.transitions.append((browser_state, kwargs))
+        self.state = SimpleNamespace(browser_state=browser_state, **kwargs)
+        return self.state
+
+
+class _FakeWorker:
+    def __init__(self, *, alive: bool, exits_on_join: bool = False) -> None:
+        self.alive = alive
+        self.exits_on_join = exits_on_join
+        self.join_timeouts = []
+
+    def join(self, timeout):
+        self.join_timeouts.append(timeout)
+        if self.exits_on_join:
+            self.alive = False
+
+    def is_alive(self):
+        return self.alive
 
 
 def test_init_plugin_stops_old_runtime_before_start(tmp_path, monkeypatch):
@@ -198,14 +232,14 @@ def test_stop_service_uses_bounded_join_and_closes_active_context(tmp_path):
     calls = []
     context = SimpleNamespace(close=lambda: calls.append("close"))
     plugin._browser = SimpleNamespace(_active_context=context)
-    plugin._worker = SimpleNamespace(
-        join=lambda timeout: calls.append(("join", timeout))
-    )
+    worker = _FakeWorker(alive=True, exits_on_join=True)
+    plugin._worker = worker
     plugin._enabled = True
 
     plugin.stop_service()
 
-    assert calls == ["close", ("join", 2.0)]
+    assert calls == ["close"]
+    assert worker.join_timeouts == [2.0]
     assert plugin.get_state() is False
     assert plugin._worker is None
     assert plugin._browser is None
@@ -473,3 +507,179 @@ def test_diagnostic_response_redacts_runtime_secret_values(tmp_path):
     assert "test-api-token" not in rendered
     assert "session-secret" not in rendered
     assert "route-secret" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("endpoint_name", "browser_method"),
+    [("start_login", "capture_login_qrcode"), ("logout", "logout")],
+)
+def test_browser_pause_outcome_is_persisted_and_safely_notified_once(
+    tmp_path, endpoint_name, browser_method
+):
+    plugin = _plugin(tmp_path)
+    repository = _RuntimeRepository()
+    outcome = entrypoint.OperationResult(
+        success=False,
+        code="SESSION_EXPIRED",
+        message="Cookie=session-secret",
+        should_pause=True,
+    )
+    plugin._repository = repository
+    plugin._browser = SimpleNamespace(**{browser_method: lambda: outcome})
+    plugin._notifications_enabled = False
+    notifications = []
+    plugin.post_message = lambda **kwargs: notifications.append(kwargs)
+
+    endpoint = getattr(plugin, endpoint_name)
+    first = endpoint(apikey="test-api-token")
+    second = endpoint(apikey="test-api-token")
+
+    assert first.success is False
+    assert second.success is False
+    assert repository.state.browser_state is entrypoint.BrowserState.PAUSED
+    assert repository.state.pause_code == "SESSION_EXPIRED"
+    assert repository.state.pause_notified is True
+    assert len(repository.transitions) == 1
+    assert len(notifications) == 1
+    assert "session-secret" not in repr(notifications)
+
+
+def test_ordinary_browser_failure_does_not_pause_or_notify(tmp_path):
+    plugin = _plugin(tmp_path)
+    repository = _RuntimeRepository()
+    plugin._repository = repository
+    plugin._browser = SimpleNamespace(
+        capture_login_qrcode=lambda: entrypoint.OperationResult(
+            success=False,
+            code="UPSTREAM_ERROR",
+            should_pause=False,
+        )
+    )
+    notifications = []
+    plugin.post_message = lambda **kwargs: notifications.append(kwargs)
+
+    response = plugin.start_login(apikey="test-api-token")
+
+    assert response.success is False
+    assert repository.state.browser_state is entrypoint.BrowserState.READY
+    assert repository.transitions == []
+    assert notifications == []
+
+
+def test_browser_outcome_response_replaces_unknown_code_with_public_code(tmp_path):
+    plugin = _plugin(tmp_path)
+    repository = _RuntimeRepository()
+    plugin._repository = repository
+    plugin._browser = SimpleNamespace(
+        capture_login_qrcode=lambda: entrypoint.OperationResult(
+            success=False,
+            code="Cookie=session-secret",
+            should_pause=True,
+        )
+    )
+    plugin.post_message = lambda **kwargs: None
+
+    response = plugin.start_login(apikey="test-api-token")
+
+    assert response.success is False
+    assert response.data == {"code": "UPSTREAM_ERROR"}
+    assert repository.state.pause_code == "UPSTREAM_ERROR"
+    assert "session-secret" not in repr(response)
+
+
+def test_stop_retains_live_worker_after_join_timeout_and_reload_does_not_overlap(
+    tmp_path, monkeypatch
+):
+    plugin = _plugin(tmp_path)
+    worker = _FakeWorker(alive=True)
+    plugin._worker = worker
+    built = []
+    monkeypatch.setattr(plugin, "_build_runtime", lambda: built.append(True))
+
+    plugin.stop_service()
+    plugin.init_plugin({"enabled": True, "authorized_user_ids": "u1"})
+
+    assert worker.join_timeouts == [2.0, 2.0]
+    assert plugin._worker is worker
+    assert plugin.get_state() is False
+    assert built == []
+
+
+def test_reload_replaces_generation_stop_event_instead_of_clearing_old_event(tmp_path):
+    plugin = _plugin(tmp_path)
+    old_stop_event = plugin._stop_event
+    plugin._worker = _FakeWorker(alive=True, exits_on_join=True)
+
+    plugin.init_plugin({"enabled": True, "authorized_user_ids": "u1"})
+
+    assert old_stop_event.is_set()
+    assert plugin._stop_event is not old_stop_event
+    assert plugin._stop_event.is_set() is False
+    plugin.stop_service()
+
+
+def test_stop_boundary_rejects_all_workers_until_next_initialized_generation(
+    tmp_path,
+):
+    plugin = _plugin(tmp_path)
+    calls = []
+    browser = SimpleNamespace(
+        install_chromium=lambda: calls.append("install")
+    )
+
+    plugin.stop_service()
+    plugin._browser = browser
+    stopped = plugin.install_chromium(apikey="test-api-token")
+
+    assert stopped.success is False
+    assert calls == []
+
+    plugin.init_plugin({"enabled": False})
+    plugin._browser = browser
+    initialized = plugin.install_chromium(apikey="test-api-token")
+    plugin._worker.join(timeout=0.5)
+
+    assert initialized.success is True
+    assert calls == ["install"]
+
+
+def test_runtime_payload_sanitizer_handles_keys_headers_and_token_count(tmp_path):
+    plugin = _plugin(tmp_path)
+    payload = {
+        "authorization": "Bearer auth-key-secret",
+        "Cookie": "first=cookie-one; second=cookie-two",
+        "llm_api_key": "llm-secret",
+        "xsecToken": "xsec-secret",
+        "raw_notification": {"body": "notification-secret"},
+        "token_count": 42,
+        "reason": (
+            "Authorization: Bearer header-secret\n"
+            "Cookie: first=header-cookie-one; second=header-cookie-two"
+        ),
+    }
+    plugin._resolver = SimpleNamespace(
+        resolve=lambda media_request: SimpleNamespace(
+            model_dump=lambda mode: payload
+        )
+    )
+
+    response = plugin.test_ai(
+        {"title": "Arrival"}, apikey="test-api-token"
+    )
+
+    rendered = repr(response.data)
+    assert response.success is True
+    assert response.data["token_count"] == 42
+    for secret in (
+        "auth-key-secret",
+        "cookie-one",
+        "cookie-two",
+        "llm-secret",
+        "xsec-secret",
+        "notification-secret",
+        "header-secret",
+        "header-cookie-one",
+        "header-cookie-two",
+    ):
+        assert secret not in rendered
+    assert set(response.data) == {"token_count", "reason"}

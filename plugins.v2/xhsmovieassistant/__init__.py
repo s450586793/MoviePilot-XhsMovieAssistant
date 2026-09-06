@@ -7,6 +7,7 @@ import hmac
 import re
 import threading
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,13 +58,27 @@ _OPERATION_MESSAGES = {
     "UPSTREAM_ERROR": "The browser action failed",
     "XHS_RISK_CONTROL": "Site verification is required",
 }
-_SENSITIVE_KEY = re.compile(
-    r"(?:^|[_-])(?:api[_-]?key|api[_-]?token|authorization|cookie|credential|secret|token)(?:$|[_-])",
+_AUTHORIZATION_HEADER = re.compile(
+    r"\bauthorization\s*:\s*[^\r\n]*",
     re.IGNORECASE,
 )
+_COOKIE_HEADER = re.compile(r"\bcookie\s*:\s*[^\r\n]*", re.IGNORECASE)
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"\b(?:authorization|cookie|xsec[_-]?token|api[_-]?(?:key|token))\s*[:=]\s*[^\s,;]+",
+    r"\b(?:authorization|cookie)\s*=\s*[^\r\n]*"
+    r"|\b(?:xsec[_-]?token|api[_-]?(?:key|token))\s*[:=]\s*[^\s,;]+",
     re.IGNORECASE,
+)
+_SENSITIVE_KEYS = frozenset(
+    {
+        "authorization",
+        "credential",
+        "credentials",
+        "password",
+        "passwd",
+        "rawnotification",
+        "secret",
+        "secretkey",
+    }
 )
 
 
@@ -100,6 +115,7 @@ class XhsMovieAssistant(_PluginBase):
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._generation = 0
         self._cached_status: dict[str, Any] = {
             "browser": "UNKNOWN",
             "login": "UNKNOWN",
@@ -110,6 +126,10 @@ class XhsMovieAssistant(_PluginBase):
     def init_plugin(self, config: dict[str, Any] | None = None) -> None:
         """Replace the current runtime with one built from validated config."""
         self.stop_service()
+        if self._has_live_worker():
+            self._cached_status["activity"] = "STOPPING"
+            return
+        self._begin_generation()
         values = dict(_DEFAULTS)
         if isinstance(config, Mapping):
             values.update(config)
@@ -489,9 +509,10 @@ class XhsMovieAssistant(_PluginBase):
     def stop_service(self) -> None:
         """Bound shutdown and release active resources without deleting the Profile."""
         self._enabled = False
-        self._stop_event.set()
-        worker = self._worker
-        browser = self._browser
+        with self._worker_lock:
+            self._stop_event.set()
+            worker = self._worker
+            browser = self._browser
         if browser is not None:
             context = getattr(browser, "_active_context", None)
             if context is not None:
@@ -504,7 +525,9 @@ class XhsMovieAssistant(_PluginBase):
                 worker.join(timeout=_JOIN_TIMEOUT_SECONDS)
             except (RuntimeError, TypeError):
                 pass
-        self._worker = None
+        with self._worker_lock:
+            if self._worker is worker and not _worker_is_alive(worker):
+                self._worker = None
         self._clear_runtime(keep_repository=False)
 
     def _apply_config(self, values: Mapping[str, Any]) -> None:
@@ -558,11 +581,13 @@ class XhsMovieAssistant(_PluginBase):
             notifications_enabled=self._notifications_enabled,
             templates=ReplyTemplates(self._template_values),
         )
-        self._browser = browser
-        self._resolver = resolver
-        self._moviepilot = moviepilot
-        self._service = service
-        self._stop_event.clear()
+        with self._worker_lock:
+            if _worker_is_alive(self._worker):
+                raise RuntimeError("previous worker is still running")
+            self._browser = browser
+            self._resolver = resolver
+            self._moviepilot = moviepilot
+            self._service = service
         self._cached_status.update(browser=BrowserState.READY.value, activity="IDLE")
 
     def _ensure_browser(self) -> BrowserManager:
@@ -576,23 +601,35 @@ class XhsMovieAssistant(_PluginBase):
 
     def _start_worker(self, activity: str, operation: Callable[[], Any]) -> bool:
         with self._worker_lock:
-            if self._worker is not None and self._worker.is_alive():
+            if _worker_is_alive(self._worker):
                 return False
-            if self._stop_event.is_set() and activity == "poll":
+            self._worker = None
+            if self._stop_event.is_set():
                 return False
+            generation = self._generation
+            stop_event = self._stop_event
 
             def run() -> None:
+                if activity == "poll" and stop_event.is_set():
+                    return
                 self._cached_status["activity"] = activity.upper()
                 try:
                     outcome = operation()
-                    if isinstance(outcome, OperationResult):
+                    if (
+                        generation == self._generation
+                        and isinstance(outcome, OperationResult)
+                    ):
                         self._cached_status["browser"] = (
                             BrowserState.READY.value if outcome.success else outcome.code or "ERROR"
                         )
                 except Exception:
-                    self._cached_status["activity"] = "FAILED"
+                    if generation == self._generation:
+                        self._cached_status["activity"] = "FAILED"
                 finally:
-                    if self._cached_status.get("activity") != "FAILED":
+                    if (
+                        generation == self._generation
+                        and self._cached_status.get("activity") != "FAILED"
+                    ):
                         self._cached_status["activity"] = "IDLE"
 
             worker = threading.Thread(
@@ -603,6 +640,18 @@ class XhsMovieAssistant(_PluginBase):
             self._worker = worker
             worker.start()
             return True
+
+    def _has_live_worker(self) -> bool:
+        with self._worker_lock:
+            return _worker_is_alive(self._worker)
+
+    def _begin_generation(self) -> None:
+        with self._worker_lock:
+            if _worker_is_alive(self._worker):
+                raise RuntimeError("previous worker is still running")
+            self._worker = None
+            self._generation += 1
+            self._stop_event = threading.Event()
 
     def _service_action(self, method: str, request_id: int) -> Any:
         if self._service is None:
@@ -637,15 +686,38 @@ class XhsMovieAssistant(_PluginBase):
     def _failure(message: str) -> Any:
         return schemas.Response(success=False, message=message)
 
-    @staticmethod
-    def _operation_response(result: OperationResult) -> Any:
-        data = {"code": result.code} if result.code else {}
+    def _operation_response(self, result: OperationResult) -> Any:
+        self._pause_for_browser_outcome(result)
+        code = _public_operation_code(result.code)
+        data = {"code": code} if code else {}
         message = (
             "Browser operation completed"
             if result.success
-            else _OPERATION_MESSAGES.get(result.code, "Browser operation failed")
+            else _OPERATION_MESSAGES.get(code, "Browser operation failed")
         )
         return schemas.Response(success=result.success, message=message, data=data)
+
+    def _pause_for_browser_outcome(self, result: OperationResult) -> None:
+        if not result.should_pause or self._repository is None:
+            return
+        code = _public_operation_code(result.code) or "UPSTREAM_ERROR"
+        try:
+            state = self._repository.get_runtime_state()
+            if state.browser_state is BrowserState.PAUSED and state.pause_notified:
+                return
+            self._repository.set_runtime_state(
+                BrowserState.PAUSED,
+                pause_code=code,
+                paused_at=datetime.now(timezone.utc),
+                pause_notified=True,
+            )
+        except Exception:
+            return
+        self._cached_status.update(browser=BrowserState.PAUSED.value, pause_code=code)
+        try:
+            self._notify("小红书监听已暂停", f"暂停原因：{code}")
+        except Exception:
+            pass
 
     def _notify(self, title: str, text: str) -> None:
         self.post_message(mtype=NotificationType.Plugin, title=title, text=text)
@@ -842,14 +914,40 @@ def _sanitize_payload(value: Any) -> Any:
         return {
             str(key): _sanitize_payload(item)
             for key, item in value.items()
-            if not _SENSITIVE_KEY.search(str(key))
+            if not _is_sensitive_key(key)
         }
     if isinstance(value, (list, tuple)):
         return [_sanitize_payload(item) for item in value]
     if isinstance(value, str):
-        sanitized = _SENSITIVE_ASSIGNMENT.sub("[redacted]", value)
+        sanitized = _AUTHORIZATION_HEADER.sub("[redacted]", value)
+        sanitized = _COOKIE_HEADER.sub("[redacted]", sanitized)
+        sanitized = _SENSITIVE_ASSIGNMENT.sub("[redacted]", sanitized)
         api_token = str(getattr(settings, "API_TOKEN", "") or "")
         if api_token:
             sanitized = sanitized.replace(api_token, "[redacted]")
         return sanitized
     return value
+
+
+def _public_operation_code(value: Any) -> str | None:
+    if isinstance(value, str) and value in _OPERATION_MESSAGES:
+        return value
+    return "UPSTREAM_ERROR" if value else None
+
+
+def _is_sensitive_key(value: Any) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", str(value).casefold())
+    return (
+        normalized in _SENSITIVE_KEYS
+        or normalized.startswith("cookie")
+        or normalized.endswith(("apikey", "password", "secret", "token"))
+    )
+
+
+def _worker_is_alive(worker: Any) -> bool:
+    if worker is None:
+        return False
+    try:
+        return bool(worker.is_alive())
+    except (AttributeError, RuntimeError, TypeError):
+        return False
