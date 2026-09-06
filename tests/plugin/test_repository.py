@@ -292,6 +292,96 @@ def test_runtime_state_is_separate_and_contains_only_browser_health(tmp_path) ->
     assert columns == {"id", "browser_state", "pause_code", "paused_at", "pause_notified"}
 
 
+def test_notification_outbox_is_durable_deduplicated_and_metadata_only(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    repo = RequestRepository(database_path)
+    saved = repo.save_mention(make_mention())
+    created_at = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
+    enqueue = getattr(repo, "enqueue_notification", None)
+
+    assert callable(enqueue)
+
+    first = enqueue(
+        "REQUEST_RESULT",
+        request_id=saved.request.id,
+        code="SUBSCRIBED",
+        dedupe_key="request:1:secret-dedupe-material",
+        now=created_at,
+    )
+    duplicate = enqueue(
+        "REQUEST_RESULT",
+        request_id=saved.request.id,
+        code="SUBSCRIBED",
+        dedupe_key="request:1:secret-dedupe-material",
+        now=created_at + timedelta(minutes=1),
+    )
+
+    assert first.kind == "REQUEST_RESULT"
+    assert duplicate == first
+    assert first.attempt_count == 0
+    assert first.delivered_at is None
+    assert RequestRepository(database_path).pending_notifications(20) == [first]
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(notification_outbox)")
+        }
+    assert columns == {
+        "id",
+        "kind",
+        "request_id",
+        "code",
+        "dedupe_key",
+        "created_at",
+        "last_attempt_at",
+        "delivered_at",
+        "attempt_count",
+    }
+    assert b"secret-dedupe-material" not in database_path.read_bytes()
+
+
+def test_notification_outbox_retries_then_marks_delivery_once(tmp_path) -> None:
+    database_path = tmp_path / "app.db"
+    repo = RequestRepository(database_path)
+    enqueue = getattr(repo, "enqueue_notification", None)
+
+    assert callable(enqueue)
+    event = enqueue(
+        "PAUSE",
+        request_id=None,
+        code="AUTH_REQUIRED",
+        dedupe_key="pause:2026-09-07T12:00:00Z",
+        now=datetime(2026, 9, 7, 12, tzinfo=timezone.utc),
+    )
+
+    failed = repo.record_notification_attempt(
+        event.id,
+        delivered=False,
+        now=datetime(2026, 9, 7, 12, 1, tzinfo=timezone.utc),
+    )
+    pending = RequestRepository(database_path).pending_notifications(20)
+    delivered = repo.record_notification_attempt(
+        event.id,
+        delivered=True,
+        now=datetime(2026, 9, 7, 12, 2, tzinfo=timezone.utc),
+    )
+    duplicate = repo.record_notification_attempt(
+        event.id,
+        delivered=True,
+        now=datetime(2026, 9, 7, 12, 3, tzinfo=timezone.utc),
+    )
+
+    assert failed.attempt_count == 1
+    assert failed.delivered_at is None
+    assert pending == [failed]
+    assert delivered.attempt_count == 2
+    assert delivered.delivered_at == datetime(2026, 9, 7, 12, 2, tzinfo=timezone.utc)
+    assert duplicate == delivered
+    assert repo.pending_notifications(20) == []
+
+
 def test_initialization_migrates_legacy_schema_and_configures_private_wal_database(tmp_path) -> None:
     database_path = tmp_path / "legacy.db"
     with sqlite3.connect(database_path) as connection:
@@ -513,6 +603,11 @@ def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp
             "CREATE UNIQUE INDEX ux_xhs_requests_request_key ON xhs_requests (request_key)"
         )
         schema_before = _request_table_schema_snapshot(connection)
+        tables_before = tuple(
+            connection.execute(
+                "SELECT name, sql FROM sqlite_schema WHERE type = 'table' ORDER BY name"
+            )
+        )
 
     with pytest.raises(RuntimeError, match="request key collision"):
         RequestRepository(database_path)
@@ -525,6 +620,11 @@ def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp
             """
         ).fetchall()
         schema_after = _request_table_schema_snapshot(connection)
+        tables_after = tuple(
+            connection.execute(
+                "SELECT name, sql FROM sqlite_schema WHERE type = 'table' ORDER BY name"
+            )
+        )
     assert rows == [
         ("m1", "NEW", "PENDING", None, _phase1_request_key("note-1", "user-1", first_text)),
         (
@@ -536,6 +636,7 @@ def test_migration_rejects_phase1_rekey_collision_without_losing_audit_state(tmp
         ),
     ]
     assert schema_after == schema_before
+    assert tables_after == tables_before
 
 
 def test_repository_strips_or_redacts_sensitive_persistence_inputs(tmp_path) -> None:

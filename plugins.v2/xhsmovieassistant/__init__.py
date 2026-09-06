@@ -7,7 +7,6 @@ import hmac
 import re
 import threading
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -25,6 +24,7 @@ from app.schemas import NotificationType
 from .browser import BrowserManager, OperationResult
 from .models import BrowserState, MediaRequest, NoteContext, Resolution
 from .moviepilot import MoviePilotGateway
+from .notifications import enqueue_pause_notification, flush_notification_outbox
 from .repository import RequestRepository
 from .resolver import MediaResolver
 from .service import AssistantService
@@ -769,22 +769,16 @@ class XhsMovieAssistant(_PluginBase):
             return
         code = _public_operation_code(result.code) or "UPSTREAM_ERROR"
         try:
-            state = self._repository.get_runtime_state()
-            if state.browser_state is BrowserState.PAUSED and state.pause_notified:
-                return
-            self._repository.set_runtime_state(
-                BrowserState.PAUSED,
-                pause_code=code,
-                paused_at=datetime.now(timezone.utc),
-                pause_notified=True,
+            enqueue_pause_notification(self._repository, code)
+            flush_notification_outbox(
+                self._repository,
+                self._notify,
+                business_enabled=self._notifications_enabled,
+                is_cancelled=self._stop_event.is_set,
             )
         except Exception:
             return
         self._cached_status.update(browser=BrowserState.PAUSED.value, pause_code=code)
-        try:
-            self._notify("小红书监听已暂停", f"暂停原因：{code}")
-        except Exception:
-            pass
 
     def _notify(self, title: str, text: str) -> None:
         self.post_message(mtype=NotificationType.Plugin, title=title, text=text)

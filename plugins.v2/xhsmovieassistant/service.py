@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -15,6 +14,7 @@ from .models import (
     RequestStatus,
     Resolution,
 )
+from .notifications import enqueue_pause_notification, flush_notification_outbox
 from .repository import (
     IdempotencyConflict,
     InvalidTransition,
@@ -97,6 +97,7 @@ class AssistantService:
 
     def poll_once(self) -> list[ProcessingResult]:
         """Process each newly observed authorized mention at most once."""
+        self._flush_notifications()
         if self.repository.get_runtime_state().browser_state is BrowserState.PAUSED:
             return []
         try:
@@ -160,6 +161,7 @@ class AssistantService:
 
     def reprocess(self, request_id: int) -> ProcessingResult:
         """Requeue and process one eligible request using durable safe fields."""
+        self._flush_notifications()
         stored = self._require_authorized(request_id)
         self.repository.requeue(request_id, authenticated=True)
         if stored.note is None:
@@ -182,6 +184,7 @@ class AssistantService:
 
     def ignore(self, request_id: int) -> StoredRequest:
         """Mark a new or manually requeueable request as ignored."""
+        self._flush_notifications()
         stored = self._require_request(request_id)
         if stored.status in _REPROCESSABLE:
             stored = self.repository.requeue(request_id, authenticated=True)
@@ -193,6 +196,7 @@ class AssistantService:
         self, request_id: int, resolution: Resolution
     ) -> ProcessingResult:
         """Apply an authenticated manual resolution through normal MP checks."""
+        self._flush_notifications()
         if not isinstance(resolution, Resolution):
             raise TypeError("resolution must be a Resolution")
         stored = self._require_authorized(request_id)
@@ -214,6 +218,7 @@ class AssistantService:
 
     def resume(self) -> None:
         """Clear a persisted browser pause and its notification marker."""
+        self._flush_notifications()
         self.repository.set_runtime_state(BrowserState.READY)
         self._consecutive_poll_failures = 0
 
@@ -372,12 +377,14 @@ class AssistantService:
     ) -> ProcessingResult:
         if self._is_cancelled():
             return result
-        self._safe_notify(
-            "小红书影视助手",
-            f"请求 {request_id} 处理结果：{result.status.value}",
+        self._enqueue_business_notification(
+            "REQUEST_RESULT",
+            request_id,
+            result.status.value,
         )
         if mention is not None:
             self._reply(request_id, mention, result)
+        self._flush_notifications()
         return result
 
     def _reply(
@@ -406,7 +413,9 @@ class AssistantService:
             return
         except Exception:
             self.repository.mark_reply(request_id, status=ReplyStatus.FAILED)
-            self._safe_notify("小红书回复失败", f"请求 {request_id}：REPLY_FAILED")
+            self._enqueue_business_notification(
+                "REPLY_FAILURE", request_id, "REPLY_FAILED"
+            )
             return
 
         if outcome.success:
@@ -416,28 +425,37 @@ class AssistantService:
         if outcome.code in _REPLY_PAUSE_CODES:
             self._pause(outcome.code)
         else:
-            self._safe_notify("小红书回复失败", f"请求 {request_id}：REPLY_FAILED")
+            self._enqueue_business_notification(
+                "REPLY_FAILURE", request_id, "REPLY_FAILED"
+            )
 
     def _pause(self, code: str) -> None:
-        state = self.repository.get_runtime_state()
-        if state.browser_state is BrowserState.PAUSED and state.pause_notified:
-            return
-        self.repository.set_runtime_state(
-            BrowserState.PAUSED,
-            pause_code=code,
-            paused_at=datetime.now(timezone.utc),
-            pause_notified=True,
-        )
-        self._safe_notify("小红书监听已暂停", f"暂停原因：{code}")
+        enqueue_pause_notification(self.repository, code)
+        self._flush_notifications()
 
-    def _safe_notify(self, title: str, text: str) -> None:
-        if not self.notifications_enabled or self.notify is None:
+    def _enqueue_business_notification(
+        self, kind: str, request_id: int, code: str
+    ) -> None:
+        if not self.notifications_enabled:
             return
         try:
-            self._ensure_active()
-            self.notify(title, text)
+            stored = self._require_request(request_id)
+            self.repository.enqueue_notification(
+                kind,
+                request_id=request_id,
+                code=code,
+                dedupe_key=f"{kind}:{request_id}:{stored.attempt_count}",
+            )
         except Exception:
-            pass
+            return
+
+    def _flush_notifications(self) -> None:
+        flush_notification_outbox(
+            self.repository,
+            self.notify,
+            business_enabled=self.notifications_enabled,
+            is_cancelled=self._is_cancelled,
+        )
 
     def _ensure_active(self, request_id: int | None = None) -> None:
         if self._is_cancelled():

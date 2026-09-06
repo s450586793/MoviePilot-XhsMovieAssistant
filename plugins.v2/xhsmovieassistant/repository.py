@@ -76,6 +76,10 @@ RECOVERABLE_STATUSES = {
     RequestStatus.RESOLVING,
     RequestStatus.MATCHED,
 }
+NOTIFICATION_KINDS = frozenset({"REQUEST_RESULT", "REPLY_FAILURE", "PAUSE"})
+SAFE_NOTIFICATION_CODES = SAFE_PERSISTED_CODES | frozenset(
+    status.value for status in RequestStatus
+) | {"REPLY_FAILED"}
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,21 @@ class RuntimeState:
     pause_code: str | None
     paused_at: datetime | None
     pause_notified: bool
+
+
+@dataclass(frozen=True)
+class OutboxNotification:
+    """One metadata-only notification awaiting confirmed delivery."""
+
+    id: int
+    kind: str
+    request_id: int | None
+    code: str
+    dedupe_key: str
+    created_at: datetime
+    last_attempt_at: datetime | None
+    delivered_at: datetime | None
+    attempt_count: int
 
 
 class RequestRepository:
@@ -425,6 +444,116 @@ class RequestRepository:
             raise RuntimeError("Runtime state was not initialized")
         return _runtime_state_from_row(row)
 
+    def enqueue_notification(
+        self,
+        kind: str,
+        *,
+        request_id: int | None,
+        code: str,
+        dedupe_key: str,
+        now: datetime | None = None,
+    ) -> OutboxNotification:
+        """Persist one metadata-only notification event exactly once."""
+        if kind not in NOTIFICATION_KINDS:
+            raise ValueError("unsupported notification kind")
+        if request_id is not None and (
+            isinstance(request_id, bool) or not isinstance(request_id, int) or request_id < 1
+        ):
+            raise ValueError("request_id must be a positive integer or None")
+        if kind == "PAUSE" and request_id is not None:
+            raise ValueError("pause notifications cannot reference a request")
+        if kind != "PAUSE" and request_id is None:
+            raise ValueError("request notification requires request_id")
+        if not isinstance(dedupe_key, str) or not dedupe_key:
+            raise ValueError("dedupe_key must be a non-empty string")
+        timestamp = now or _utc_now()
+        _require_aware_datetime(timestamp, "now")
+        safe_code = _safe_notification_code(code)
+        stored_key = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            if request_id is not None:
+                _require_row(connection, request_id)
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO notification_outbox (
+                    kind, request_id, code, dedupe_key, created_at, attempt_count
+                ) VALUES (?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    kind,
+                    request_id,
+                    safe_code,
+                    stored_key,
+                    _format_datetime(timestamp),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM notification_outbox WHERE dedupe_key = ?",
+                (stored_key,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Notification event could not be read back")
+        if (
+            row["kind"] != kind
+            or row["request_id"] != request_id
+            or row["code"] != safe_code
+        ):
+            raise IdempotencyConflict(
+                "notification dedupe key identifies a different event"
+            )
+        return _notification_from_row(row)
+
+    def pending_notifications(self, limit: int = 20) -> list[OutboxNotification]:
+        """Return undelivered notification metadata in insertion order."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM notification_outbox
+                WHERE delivered_at IS NULL
+                ORDER BY id ASC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [_notification_from_row(row) for row in rows]
+
+    def record_notification_attempt(
+        self,
+        notification_id: int,
+        *,
+        delivered: bool,
+        now: datetime | None = None,
+    ) -> OutboxNotification:
+        """Record one delivery attempt without reopening delivered events."""
+        if (
+            isinstance(notification_id, bool)
+            or not isinstance(notification_id, int)
+            or notification_id < 1
+        ):
+            raise ValueError("notification_id must be a positive integer")
+        if not isinstance(delivered, bool):
+            raise TypeError("delivered must be a bool")
+        timestamp = now or _utc_now()
+        _require_aware_datetime(timestamp, "now")
+        formatted = _format_datetime(timestamp)
+        with self._connect() as connection:
+            row = _require_notification_row(connection, notification_id)
+            if row["delivered_at"] is not None:
+                return _notification_from_row(row)
+            connection.execute(
+                """
+                UPDATE notification_outbox
+                SET attempt_count = attempt_count + 1,
+                    last_attempt_at = ?,
+                    delivered_at = ?
+                WHERE id = ? AND delivered_at IS NULL
+                """,
+                (formatted, formatted if delivered else None, notification_id),
+            )
+            updated = _require_notification_row(connection, notification_id)
+        return _notification_from_row(updated)
+
     def recover_interrupted(self, *, now: datetime | None = None) -> int:
         """Return stale in-progress work to NEW after a process interruption."""
         current_time = now or _utc_now()
@@ -537,6 +666,27 @@ class RequestRepository:
                 VALUES (1, ?, 0)
                 """,
                 (BrowserState.READY.value,),
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    request_id INTEGER,
+                    code TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_attempt_at TEXT,
+                    delivered_at TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_notification_outbox_dedupe_key
+                ON notification_outbox (dedupe_key)
+                """
             )
 
 
@@ -651,6 +801,17 @@ def _require_row(connection: sqlite3.Connection, request_id: int) -> sqlite3.Row
     return row
 
 
+def _require_notification_row(
+    connection: sqlite3.Connection, notification_id: int
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM notification_outbox WHERE id = ?", (notification_id,)
+    ).fetchone()
+    if row is None:
+        raise RequestNotFound(f"Notification {notification_id} was not found")
+    return row
+
+
 def _validate_mention(mention: NewMention) -> None:
     if not isinstance(mention, NewMention):
         raise TypeError("mention must be a NewMention")
@@ -693,6 +854,12 @@ def _safe_persisted_code(value: str | None) -> str | None:
     if not isinstance(value, str):
         raise TypeError("persisted code must be a string")
     return value if value in SAFE_PERSISTED_CODES else "REDACTED"
+
+
+def _safe_notification_code(value: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError("notification code must be a string")
+    return value if value in SAFE_NOTIFICATION_CODES else "REDACTED"
 
 
 def _serialize_note(note: NoteContext) -> str:
@@ -760,6 +927,24 @@ def _runtime_state_from_row(row: sqlite3.Row) -> RuntimeState:
         browser_state=BrowserState(row["browser_state"]), pause_code=row["pause_code"],
         paused_at=_parse_datetime(row["paused_at"], "paused_at", required=False),
         pause_notified=bool(row["pause_notified"]),
+    )
+
+
+def _notification_from_row(row: sqlite3.Row) -> OutboxNotification:
+    return OutboxNotification(
+        id=row["id"],
+        kind=row["kind"],
+        request_id=row["request_id"],
+        code=row["code"],
+        dedupe_key=row["dedupe_key"],
+        created_at=_parse_datetime(row["created_at"], "created_at"),
+        last_attempt_at=_parse_datetime(
+            row["last_attempt_at"], "last_attempt_at", required=False
+        ),
+        delivered_at=_parse_datetime(
+            row["delivered_at"], "delivered_at", required=False
+        ),
+        attempt_count=row["attempt_count"],
     )
 
 

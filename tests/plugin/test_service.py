@@ -197,6 +197,7 @@ def build_service(
     replies_enabled: bool = False,
     confidence_threshold: float = 0.85,
     notify: Callable[[str, str], None] | None = None,
+    notifications_enabled: bool = True,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> tuple[
     AssistantService,
@@ -221,6 +222,7 @@ def build_service(
         notify=callback,
         enable_subscription=enable_subscription,
         replies_enabled=replies_enabled,
+        notifications_enabled=notifications_enabled,
         confidence_threshold=confidence_threshold,
         is_cancelled=is_cancelled,
     )
@@ -813,6 +815,121 @@ def test_notification_failure_does_not_change_committed_result(tmp_path: Path) -
 
     assert service.poll_once()[0].status is RequestStatus.DRY_RUN_MATCHED
     assert repository.recent(1)[0].status is RequestStatus.DRY_RUN_MATCHED
+
+
+def test_terminal_notification_failure_retries_after_restart_once(
+    tmp_path: Path,
+) -> None:
+    attempts: list[tuple[str, str]] = []
+
+    def flaky_notify(title: str, text: str) -> None:
+        attempts.append((title, text))
+        if len(attempts) == 1:
+            raise RuntimeError("notification unavailable")
+
+    database_path = tmp_path / "assistant.db"
+    service, repository, xhs, _, _, _ = build_service(
+        database_path,
+        notify=flaky_notify,
+    )
+    xhs.mentions = [mention()]
+
+    assert service.poll_once()[0].status is RequestStatus.DRY_RUN_MATCHED
+    pending = repository.pending_notifications(20)
+    assert len(pending) == 1
+    assert pending[0].code == "DRY_RUN_MATCHED"
+    assert pending[0].attempt_count == 1
+
+    restarted, restarted_repository, _, _, _, _ = build_service(
+        database_path,
+        notify=flaky_notify,
+    )
+    restarted.poll_once()
+    restarted.poll_once()
+
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+    assert restarted_repository.pending_notifications(20) == []
+
+
+def test_pause_notification_retries_when_business_notifications_are_disabled(
+    tmp_path: Path,
+) -> None:
+    attempts: list[tuple[str, str]] = []
+
+    def flaky_notify(title: str, text: str) -> None:
+        attempts.append((title, text))
+        if len(attempts) == 1:
+            raise RuntimeError("notification unavailable")
+
+    service, repository, xhs, _, _, _ = build_service(
+        tmp_path / "assistant.db",
+        notify=flaky_notify,
+        notifications_enabled=False,
+    )
+    xhs.mention_failures = [XhsPausedError("AUTH_REQUIRED")]
+
+    service.poll_once()
+    failed = repository.get_runtime_state()
+    assert failed.browser_state is BrowserState.PAUSED
+    assert failed.pause_notified is False
+    assert repository.pending_notifications(20)[0].attempt_count == 1
+
+    service.poll_once()
+    service.poll_once()
+
+    delivered = repository.get_runtime_state()
+    assert delivered.pause_notified is True
+    assert len(attempts) == 2
+    assert repository.pending_notifications(20) == []
+    assert xhs.fetch_mentions_calls == 1
+
+
+def test_paused_poll_recreates_missing_safety_outbox_event(tmp_path: Path) -> None:
+    delivered: list[tuple[str, str]] = []
+    service, repository, xhs, _, _, _ = build_service(
+        tmp_path / "assistant.db",
+        notify=lambda title, text: delivered.append((title, text)),
+    )
+    xhs.mention_failures = [XhsPausedError("AUTH_REQUIRED")]
+    original_enqueue = repository.enqueue_notification
+    enqueue_attempts = 0
+
+    def fail_first_two_enqueues(*args, **kwargs):
+        nonlocal enqueue_attempts
+        enqueue_attempts += 1
+        if enqueue_attempts <= 2:
+            raise RuntimeError("database temporarily unavailable")
+        return original_enqueue(*args, **kwargs)
+
+    repository.enqueue_notification = fail_first_two_enqueues  # type: ignore[method-assign]
+
+    service.poll_once()
+    assert repository.get_runtime_state().pause_notified is False
+    assert delivered == []
+
+    service.poll_once()
+
+    assert repository.get_runtime_state().pause_notified is True
+    assert len(delivered) == 1
+    assert repository.pending_notifications(20) == []
+
+
+def test_business_notification_disablement_leaves_no_pending_result_event(
+    tmp_path: Path,
+) -> None:
+    attempts: list[tuple[str, str]] = []
+    service, repository, xhs, _, _, _ = build_service(
+        tmp_path / "assistant.db",
+        notify=lambda title, text: attempts.append((title, text)),
+        notifications_enabled=False,
+    )
+    xhs.mentions = [mention()]
+
+    assert service.poll_once()[0].status is RequestStatus.DRY_RUN_MATCHED
+
+    assert attempts == []
+    assert repository.pending_notifications(20) == []
 
 
 def test_constructor_rejects_out_of_range_confidence_threshold(tmp_path: Path) -> None:

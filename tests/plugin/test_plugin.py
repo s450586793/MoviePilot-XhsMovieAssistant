@@ -650,7 +650,7 @@ def test_browser_pause_outcome_is_persisted_and_safely_notified_once(
     tmp_path, endpoint_name, browser_method
 ):
     plugin = _plugin(tmp_path)
-    repository = _RuntimeRepository()
+    repository = entrypoint.RequestRepository(tmp_path / "app.db")
     outcome = entrypoint.OperationResult(
         success=False,
         code="SESSION_EXPIRED",
@@ -669,12 +669,49 @@ def test_browser_pause_outcome_is_persisted_and_safely_notified_once(
 
     assert first.success is False
     assert second.success is False
-    assert repository.state.browser_state is entrypoint.BrowserState.PAUSED
-    assert repository.state.pause_code == "SESSION_EXPIRED"
-    assert repository.state.pause_notified is True
-    assert len(repository.transitions) == 1
+    assert repository.get_runtime_state().browser_state is entrypoint.BrowserState.PAUSED
+    assert repository.get_runtime_state().pause_code == "SESSION_EXPIRED"
+    assert repository.get_runtime_state().pause_notified is True
+    assert repository.pending_notifications(20) == []
     assert len(notifications) == 1
     assert "session-secret" not in repr(notifications)
+
+
+def test_browser_pause_notification_retries_until_confirmed(tmp_path):
+    plugin = _plugin(tmp_path)
+    repository = entrypoint.RequestRepository(tmp_path / "app.db")
+    outcome = entrypoint.OperationResult(
+        success=False,
+        code="SESSION_EXPIRED",
+        should_pause=True,
+    )
+    plugin._repository = repository
+    plugin._browser = SimpleNamespace(check_login=lambda: outcome)
+    plugin._notifications_enabled = False
+    attempts = []
+
+    def flaky_post_message(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise RuntimeError("notification unavailable")
+
+    plugin.post_message = flaky_post_message
+
+    first = plugin.start_login(apikey="test-api-token")
+    failed = repository.get_runtime_state()
+    assert first.success is False
+    assert failed.browser_state is entrypoint.BrowserState.PAUSED
+    assert failed.pause_notified is False
+    assert repository.pending_notifications(20)[0].attempt_count == 1
+
+    second = plugin.start_login(apikey="test-api-token")
+    third = plugin.start_login(apikey="test-api-token")
+
+    assert second.success is False
+    assert third.success is False
+    assert repository.get_runtime_state().pause_notified is True
+    assert repository.pending_notifications(20) == []
+    assert len(attempts) == 2
 
 
 def test_ordinary_browser_failure_does_not_pause_or_notify(tmp_path):
