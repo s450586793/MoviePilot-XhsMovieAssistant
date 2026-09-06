@@ -38,6 +38,8 @@ class FakeLocator:
         return self.page.qr_png
 
     def inner_text(self, **kwargs) -> str:
+        if self.selector == "body" and self.page.body_error is not None:
+            raise self.page.body_error
         return self.page.text
 
     def _matches(self) -> list[str]:
@@ -66,6 +68,7 @@ class FakePage:
         self.visible_selectors: set[str] = set()
         self.present_selectors: set[str] = set()
         self.text = ""
+        self.body_error = None
         self.qr_png = b"\x89PNG\r\n\x1a\nqr"
         self.goto_status = 200
         self.goto_args = None
@@ -315,6 +318,7 @@ def test_install_chromium_uses_only_fixed_argv_and_private_cache(
     result = browser.install_chromium()
 
     assert result.success is True
+    assert result.message == "installed"
     assert observed["argv"] == [sys.executable, "-m", "playwright", "install", "chromium"]
     assert observed["kwargs"]["timeout"] == 600
     assert observed["kwargs"]["capture_output"] is True
@@ -400,6 +404,40 @@ def test_install_chromium_redaction_fails_closed_for_encoded_credentials(
     assert result.success is False
     for secret in secrets:
         assert secret not in result.message
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Cookie: session=topsecret",
+        "Set-Cookie: session=topsecret; HttpOnly",
+        "MOVIEPILOT_API_TOKEN=topsecret",
+        "api_token=topsecret",
+        "TOKEN=topsecret",
+        "SERVICE_KEY=topsecret",
+        "client-secret: topsecret",
+        "password=topsecret",
+        "authorization: Bearer topsecret",
+        "credential=topsecret",
+        '{"xsec_token":"topsecret"}',
+    ],
+)
+def test_install_chromium_redacts_each_sensitive_assignment_line(
+    tmp_path, monkeypatch, output: str
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout=output, stderr=""
+        ),
+    )
+
+    result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
+
+    assert result.success is False
+    assert "topsecret" not in result.message
+    assert result.message == "[REDACTED]"
 
 
 def test_install_chromium_timeout_is_sanitized(tmp_path, monkeypatch) -> None:
@@ -614,3 +652,22 @@ def test_navigation_response_status_pauses_even_with_empty_body(
 
     assert result.code == expected_code
     assert result.should_pause is True
+
+
+@pytest.mark.parametrize("operation", ["check_login", "capture_login_qrcode", "logout"])
+@pytest.mark.parametrize(
+    ("status", "expected_code"),
+    [(403, "AUTH_REQUIRED"), (429, "RATE_LIMITED")],
+)
+def test_navigation_status_takes_priority_over_body_read_failure(
+    manager, fake_playwright, operation: str, status: int, expected_code: str
+) -> None:
+    fake_playwright.page.goto_status = status
+    fake_playwright.page.body_error = RuntimeError("body unavailable")
+
+    result = getattr(manager, operation)()
+
+    assert result.code == expected_code
+    assert result.should_pause is True
+    if operation == "logout":
+        assert fake_playwright.cookies_cleared is True

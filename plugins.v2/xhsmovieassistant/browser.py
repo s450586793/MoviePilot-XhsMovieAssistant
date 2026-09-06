@@ -33,8 +33,9 @@ _SENSITIVE_QUERY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SENSITIVE_TEXT_PATTERN = re.compile(
-    r"(?:xsec[_-]?token|access[_-]?token|refresh[_-]?token|api[\s_-]?key|"
-    r"authorization|password|passwd|credential|secret)\s*[:=]",
+    r"(?:^|[\s{,;])[\"']?(?:[A-Z0-9]+[_-])*"
+    r"(?:cookie|token|key|secret|password|passwd|authorization|credential)"
+    r"[\"']?\s*[:=]",
     re.IGNORECASE,
 )
 _BEARER_PATTERN = re.compile(r"\bbearer\s+\S+", re.IGNORECASE)
@@ -260,6 +261,10 @@ class BrowserManager:
         self, page: Any, response_status: int | None = None
     ) -> OperationResult:
         """Classify login and anti-abuse pages into stable persistence-safe codes."""
+        if response_status == 429:
+            return _pause_result("RATE_LIMITED", "Request rate was limited")
+        if response_status == 403:
+            return _pause_result("AUTH_REQUIRED", "Access was forbidden")
         try:
             text = str(page.locator("body").inner_text(timeout=3_000) or "")
         except Exception:
@@ -270,10 +275,10 @@ class BrowserManager:
             )
 
         normalized = text.casefold()
-        if response_status == 429 or "too many requests" in normalized:
+        if "too many requests" in normalized:
             return _pause_result("RATE_LIMITED", "Request rate was limited")
         forbidden_markers = ("403 forbidden", "access forbidden", "access denied")
-        if response_status == 403 or any(marker in normalized for marker in forbidden_markers):
+        if any(marker in normalized for marker in forbidden_markers):
             return _pause_result("AUTH_REQUIRED", "Access was forbidden")
         if "登录状态已过期" in text or "session expired" in normalized:
             return _pause_result("SESSION_EXPIRED", "Session expired")
