@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from collections.abc import Mapping
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -79,6 +80,61 @@ def note_state() -> dict[str, object]:
             }
         }
     }
+
+
+def _fake_unwrap(value: object) -> Mapping[str, object] | None:
+    seen: set[int] = set()
+    while isinstance(value, Mapping) and id(value) not in seen:
+        seen.add(id(value))
+        wrapped = value.get("_value")
+        if not isinstance(wrapped, Mapping):
+            return value
+        value = wrapped
+    return None
+
+
+def _fake_note_record(value: object) -> Mapping[str, object] | None:
+    entry = _fake_unwrap(value)
+    if entry is None:
+        return None
+    note = _fake_unwrap(entry.get("note", entry))
+    if note is None:
+        return None
+    return note if _fake_note_has_data(note) else None
+
+
+def _fake_note_id(note: Mapping[str, object]) -> str:
+    return str(note.get("noteId") or note.get("note_id") or note.get("id") or "")
+
+
+def _fake_note_has_data(note: Mapping[str, object]) -> bool:
+    if _fake_note_id(note):
+        return True
+    if any(str(note.get(field) or "").strip() for field in ("title", "desc", "type")):
+        return True
+    if isinstance(note.get("user"), Mapping) and bool(note["user"]):
+        return True
+    time = note.get("time")
+    if isinstance(time, (int, float)) and not isinstance(time, bool):
+        return True
+    return isinstance(note.get("comments"), list) or isinstance(
+        note.get("imageList"), list
+    )
+
+
+def _fake_note_state_ready(value: object, target_id: str) -> bool:
+    root = _fake_unwrap(value)
+    if root is None:
+        return False
+    matches = []
+    for key, raw in root.items():
+        note = _fake_note_record(raw)
+        if note is None:
+            continue
+        declared = _fake_note_id(note)
+        if (key == target_id and not declared) or declared == target_id:
+            matches.append(note)
+    return len(matches) == 1
 
 
 class FakeResponse:
@@ -174,6 +230,8 @@ class FakeLocator:
                 raise self.page.submit_error
             if self.page.post_submit_risk_code is not None:
                 self.page.active_risk_code = self.page.post_submit_risk_code
+            if self.page.reply_clears_on_click:
+                self.page.input_text = ""
             if self.page.submit_response_status is not None:
                 response = FakeResponse(
                     "https://edith.xiaohongshu.com/api/sns/web/v1/comment/post",
@@ -224,6 +282,7 @@ class FakePage:
         self.post_submit_risk_code: str | None = None
         self.active_risk_code: str | None = None
         self.reply_success_after_pumps: int | None = 1
+        self.reply_clears_on_click = False
         self.post_submit_pumps = 0
         self.success_visible = False
         self.input_text = ""
@@ -279,9 +338,14 @@ class FakePage:
         self.wait_for_function_arg = kwargs.get("arg")
         if self.initial_state_timeout:
             raise TimeoutError("initial state timed out")
-        for state in self.note_state_sequence:
+        target_id = str(self.wait_for_function_arg or "")
+        snapshots = self.note_state_sequence or [self.initial_state]
+        for state in snapshots:
             self.note_state_samples += 1
             self.initial_state = state
+            if _fake_note_state_ready(state, target_id):
+                return
+        raise TimeoutError("requested note did not become ready")
 
     def evaluate(self, expression: str) -> object:
         if "commentDisabled" in expression:
@@ -507,14 +571,48 @@ def test_fetch_note_recursively_unwraps_root_vue_value(
 def test_fetch_note_waits_for_the_requested_note_after_an_empty_map(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
-    fake_page.initial_state = {}
-    fake_page.note_state_sequence = [{}, {"_value": note_state()}]
+    fake_page.initial_state = {"note /一": {}}
+    fake_page.note_state_sequence = [
+        {"note /一": {}},
+        {
+            "note /一": {
+                "note": {"noteId": "note /一", "title": "延迟就绪的笔记"}
+            }
+        },
+    ]
 
     detail = gateway.fetch_note(make_mention())
 
-    assert detail.title == "星际穿越"
+    assert detail.title == "延迟就绪的笔记"
     assert fake_page.wait_for_function_arg == "note /一"
     assert fake_page.note_state_samples == 2
+
+
+@pytest.mark.parametrize("placeholder", [{}, {"note": {"title": "", "desc": None}}])
+def test_fetch_note_rejects_an_exact_key_with_only_placeholder_data(
+    gateway: XhsGateway, fake_page: FakePage, placeholder: object
+) -> None:
+    fake_page.initial_state = {"note /一": placeholder}
+
+    with pytest.raises(XhsContractError) as error:
+        gateway.fetch_note(make_mention())
+
+    assert "token +/secret" not in str(error.value)
+
+
+def test_fetch_note_rejects_a_misleading_unicode_prefix_without_matching_id(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.initial_state = {
+        "note /一_other": {
+            "note": {"id": "different-note", "title": "前缀误导笔记"}
+        }
+    }
+
+    with pytest.raises(XhsContractError) as error:
+        gateway.fetch_note(make_mention())
+
+    assert "token +/secret" not in str(error.value)
 
 
 def test_fetch_note_selects_only_the_matching_note_from_multiple_entries(
@@ -548,7 +646,7 @@ def test_fetch_note_rejects_state_without_the_requested_note(
         "other-note": {"note": {"noteId": "other-note", "title": "错误笔记"}}
     }
 
-    with pytest.raises(XhsContractError, match="requested note") as error:
+    with pytest.raises(XhsContractError, match="note detail state") as error:
         gateway.fetch_note(make_mention())
 
     assert "token +/secret" not in str(error.value)
@@ -562,7 +660,23 @@ def test_fetch_note_rejects_ambiguous_matching_entries(
         "note /一:second": {"note": {"noteId": "note /一", "title": "版本二"}},
     }
 
-    with pytest.raises(XhsContractError, match="ambiguous") as error:
+    with pytest.raises(XhsContractError, match="note detail state") as error:
+        gateway.fetch_note(make_mention())
+
+    assert "token +/secret" not in str(error.value)
+
+
+def test_fetch_note_rejects_exact_and_declared_duplicate_as_ambiguous(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.initial_state = {
+        "note /一": {"note": {"noteId": "note /一", "title": "精确键版本"}},
+        "unrelated-cache-key": {
+            "note": {"id": "note /一", "title": "内部 ID 版本"}
+        },
+    }
+
+    with pytest.raises(XhsContractError) as error:
         gateway.fetch_note(make_mention())
 
     assert "token +/secret" not in str(error.value)
@@ -613,7 +727,7 @@ def test_fetch_note_passes_navigation_status_to_risk_detection(
 def test_fetch_note_uses_dom_only_for_content_fallback(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
-    fake_page.initial_state = {"note /一": {}}
+    fake_page.initial_state = {"note /一": {"note": {"noteId": "note /一"}}}
     fake_page.dom_text = {
         "#detail-title, .title": "DOM 标题",
         "#detail-desc, .desc": "DOM 正文",
@@ -692,7 +806,56 @@ def test_reply_reports_success_only_after_input_is_cleared(
     outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
 
     assert outcome.success is True
-    assert fake_page.post_submit_pumps == 2
+    assert fake_page.post_submit_pumps >= 2
+    assert sum(fake_page.wait_timeouts) == 3_000
+    assert fake_page.submit_clicks == 1
+
+
+@pytest.mark.parametrize(
+    ("pump", "status", "code"),
+    [(1, 403, "AUTH_REQUIRED"), (3, 429, "RATE_LIMITED")],
+)
+def test_reply_prefers_delayed_http_risk_over_synchronous_input_clear(
+    gateway: XhsGateway,
+    manager: FakeManager,
+    fake_page: FakePage,
+    pump: int,
+    status: int,
+    code: str,
+) -> None:
+    fake_page.reply_clears_on_click = True
+    fake_page.reply_success_after_pumps = None
+    fake_page.delayed_responses = [
+        (
+            pump,
+            FakeResponse(
+                "https://edith.xiaohongshu.com/api/sns/web/v1/comment/post",
+                status=status,
+            ),
+        )
+    ]
+    manager.risk_results[status] = OperationResult(
+        success=False, code=code, message="delayed risk", should_pause=True
+    )
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is False
+    assert outcome.code == code
+    assert fake_page.event_pumps >= pump
+    assert fake_page.submit_clicks == 1
+
+
+def test_reply_waits_through_confirmation_window_for_tentative_input_clear(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.reply_clears_on_click = True
+    fake_page.reply_success_after_pumps = None
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is True
+    assert sum(fake_page.wait_timeouts) == 3_000
     assert fake_page.submit_clicks == 1
 
 

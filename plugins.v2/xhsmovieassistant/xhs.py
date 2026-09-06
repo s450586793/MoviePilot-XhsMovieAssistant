@@ -151,29 +151,39 @@ class XhsGateway:
                             const entry = unwrap(raw);
                             const note = unwrap(entry?.note ?? entry);
                             if (!note || typeof note !== 'object') return null;
-                            const declared = String(note.noteId ?? note.note_id ?? '');
-                            return { key, declared };
-                        };
-                        const exact = entries.find(([key]) => key === noteId);
-                        if (exact) {
-                            const candidate = read(exact);
-                            return Boolean(
-                                candidate &&
-                                (!candidate.declared || candidate.declared === noteId)
+                            const declared = String(
+                                note.noteId ?? note.note_id ?? note.id ?? ''
                             );
-                        }
-                        const candidates = entries.map(read).filter(Boolean);
-                        const declared = candidates.filter(
-                            (candidate) => candidate.declared === noteId
-                        );
-                        if (declared.length) return declared.length === 1;
-                        const suffixes = candidates.filter(
+                            const hasText = ['title', 'desc', 'type'].some(
+                                (field) =>
+                                    typeof note[field] === 'string' &&
+                                    note[field].trim().length > 0
+                            );
+                            const hasUser =
+                                note.user && typeof note.user === 'object' &&
+                                Object.keys(note.user).length > 0;
+                            const hasTime =
+                                typeof note.time === 'number' &&
+                                Number.isFinite(note.time);
+                            const hasList =
+                                Array.isArray(note.comments) ||
+                                Array.isArray(note.imageList);
+                            const valid = Boolean(
+                                declared || hasText || hasUser || hasTime || hasList
+                            );
+                            return { key, declared, valid };
+                        };
+                        const candidates = entries
+                            .map(read)
+                            .filter((candidate) => candidate?.valid);
+                        const matches = candidates.filter(
                             (candidate) =>
-                                !candidate.declared &&
-                                candidate.key.startsWith(noteId) &&
-                                ':_@.'.includes(candidate.key.charAt(noteId.length))
+                                (
+                                    candidate.key === noteId &&
+                                    !candidate.declared
+                                ) || candidate.declared === noteId
                         );
-                        return suffixes.length === 1;
+                        return matches.length === 1;
                     }""",
                     arg=mention.note_id,
                     timeout=_NOTE_TIMEOUT_MS,
@@ -338,27 +348,17 @@ def _note_urls(base_url: str, mention: TransientMention) -> tuple[str, str]:
 
 def _note_from_map(raw_map: Mapping[object, object], note_id: str) -> Mapping[str, Any]:
     root = _unwrap_mapping(raw_map)
-    exact = root.get(note_id)
-    if isinstance(exact, Mapping):
-        note = _note_from_entry(exact)
-        declared = _declared_note_id(note)
-        if not declared or declared == note_id:
-            return note
-        raise XhsContractError("requested note was not present in note detail state")
-
-    declared_matches = []
-    suffix_matches = []
+    matches = []
     for raw_key, raw_entry in root.items():
         if not isinstance(raw_key, str) or not isinstance(raw_entry, Mapping):
             continue
         note = _note_from_entry(raw_entry)
+        if not _is_valid_note(note):
+            continue
         declared = _declared_note_id(note)
-        if declared == note_id:
-            declared_matches.append(note)
-        elif not declared and _is_note_key_suffix(raw_key, note_id):
-            suffix_matches.append(note)
+        if (raw_key == note_id and not declared) or declared == note_id:
+            matches.append(note)
 
-    matches = declared_matches or suffix_matches
     if len(matches) > 1:
         raise XhsContractError("requested note was ambiguous in note detail state")
     if not matches:
@@ -372,13 +372,27 @@ def _note_from_entry(entry: Mapping[object, object]) -> Mapping[str, Any]:
 
 
 def _declared_note_id(note: Mapping[str, Any]) -> str:
-    return _sanitize_text(note.get("noteId") or note.get("note_id"), 512)
+    return _sanitize_text(
+        note.get("noteId") or note.get("note_id") or note.get("id"), 512
+    )
 
 
-def _is_note_key_suffix(key: str, note_id: str) -> bool:
-    if not key.startswith(note_id) or len(key) <= len(note_id):
-        return False
-    return key[len(note_id)] in {":", "_", "@", "."}
+def _is_valid_note(note: Mapping[str, Any]) -> bool:
+    if _declared_note_id(note):
+        return True
+    if any(_sanitize_text(note.get(field), 16) for field in ("title", "desc", "type")):
+        return True
+    user = note.get("user")
+    if isinstance(user, Mapping) and bool(user):
+        return True
+    publication_time = note.get("time")
+    if isinstance(publication_time, (int, float)) and not isinstance(
+        publication_time, bool
+    ):
+        return True
+    return isinstance(note.get("comments"), list) or isinstance(
+        note.get("imageList"), list
+    )
 
 
 def _unwrap_mapping(value: object) -> Mapping[str, Any]:
@@ -525,6 +539,7 @@ def _confirm_reply_submission(
 ) -> ReplyOutcome:
     deadline = monotonic() + (_REPLY_CONFIRM_TIMEOUT_MS / 1_000)
     remaining_ms = _REPLY_CONFIRM_TIMEOUT_MS
+    tentative_success = False
     while True:
         while response_statuses:
             risk = _risk_outcome(manager, page, response_statuses.pop(0))
@@ -534,8 +549,10 @@ def _confirm_reply_submission(
         if risk is not None:
             return risk
         if _reply_was_confirmed(page, input_locator):
-            return ReplyOutcome(success=True, message="Reply submitted")
+            tentative_success = True
         if remaining_ms <= 0 or monotonic() >= deadline:
+            if tentative_success:
+                return ReplyOutcome(success=True, message="Reply submitted")
             return _reply_failure(
                 "SUBMIT_UNCONFIRMED", "The reply submission could not be confirmed"
             )
