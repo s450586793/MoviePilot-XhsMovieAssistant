@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .models import BrowserState, MediaMatch, ReplyStatus, RequestStatus, Resolution
 
@@ -144,7 +146,7 @@ class RequestRepository:
                 """,
                 (
                     mention.note_id,
-                    mention.note_url,
+                    _safe_note_url(mention.note_url),
                     mention.mention_id,
                     mention.sender_user_id,
                     mention.comment_id,
@@ -222,14 +224,18 @@ class RequestRepository:
                 raise InvalidTransition(f"Cannot transition {current.value} to {target.value}")
             values: dict[str, Any] = {"status": target.value, "updated_at": timestamp}
             if error is not None:
-                values["error"] = error
+                values["error"] = _safe_persisted_code(error)
             if subscription_id is not None:
                 values["subscription_id"] = subscription_id
             if resolution is not None:
                 values.update(_resolution_values(resolution))
             if match is not None:
                 values.update(_match_values(match))
-            _update(connection, request_id, values)
+            if not _compare_and_update(connection, request_id, current, values):
+                raced = _require_row(connection, request_id)
+                raise InvalidTransition(
+                    f"Cannot transition {RequestStatus(raced['status']).value} to {target.value}"
+                )
             updated = _require_row(connection, request_id)
         return _request_from_row(updated)
 
@@ -244,41 +250,66 @@ class RequestRepository:
             current = RequestStatus(row["status"])
             if current not in REQUEUEABLE_STATUSES:
                 raise InvalidTransition(f"Cannot requeue {current.value}")
-            _update(
+            if not _compare_and_update(
                 connection,
                 request_id,
+                current,
                 {
                     "status": RequestStatus.NEW.value,
                     "error": None,
                     "attempt_count": row["attempt_count"] + 1,
                     "updated_at": _format_datetime(now or _utc_now()),
                 },
-            )
+            ):
+                raced = _require_row(connection, request_id)
+                raise InvalidTransition(
+                    f"Cannot requeue {RequestStatus(raced['status']).value}"
+                )
             updated = _require_row(connection, request_id)
         return _request_from_row(updated)
 
     def mark_reply(
-        self, request_id: int, reply_id: str, *, now: datetime | None = None
+        self,
+        request_id: int,
+        reply_id: str | None = None,
+        *,
+        status: ReplyStatus = ReplyStatus.SENT,
+        now: datetime | None = None,
     ) -> StoredRequest:
-        """Record a reply once; a repeated delivery ID is harmless."""
-        if not isinstance(reply_id, str) or not reply_id.strip():
-            raise ValueError("reply_id must be a non-empty string")
+        """Atomically record one reply delivery outcome from the pending state."""
+        if not isinstance(status, ReplyStatus):
+            raise TypeError("status must be a ReplyStatus")
+        if status is ReplyStatus.SENT and (
+            not isinstance(reply_id, str) or not reply_id.strip()
+        ):
+            raise ValueError("reply_id must be a non-empty string when reply is sent")
+        if status is ReplyStatus.FAILED and reply_id is not None:
+            raise ValueError("reply_id must be omitted when reply failed")
         with self._connect() as connection:
             row = _require_row(connection, request_id)
-            if row["reply_status"] == ReplyStatus.SENT.value:
-                if row["reply_id"] == reply_id:
+            current = ReplyStatus(row["reply_status"])
+            if current is ReplyStatus.SENT:
+                if status is ReplyStatus.SENT and row["reply_id"] == reply_id:
                     return _request_from_row(row)
-                raise InvalidTransition("A different reply was already recorded")
-            _update(
-                connection,
-                request_id,
-                {
-                    "reply_status": ReplyStatus.SENT.value,
-                    "reply_id": reply_id,
-                    "replied_at": _format_datetime(now or _utc_now()),
-                    "updated_at": _format_datetime(now or _utc_now()),
-                },
-            )
+                raise InvalidTransition("Reply delivery is already final")
+            if current is ReplyStatus.FAILED:
+                raise InvalidTransition("Reply delivery is already final")
+            timestamp = _format_datetime(now or _utc_now())
+            values = {
+                "reply_status": status.value,
+                "reply_id": reply_id,
+                "replied_at": timestamp,
+                "updated_at": timestamp,
+            }
+            if not _compare_and_update_reply(connection, request_id, values):
+                raced = _require_row(connection, request_id)
+                if (
+                    status is ReplyStatus.SENT
+                    and ReplyStatus(raced["reply_status"]) is ReplyStatus.SENT
+                    and raced["reply_id"] == reply_id
+                ):
+                    return _request_from_row(raced)
+                raise InvalidTransition("Reply delivery was recorded concurrently")
             updated = _require_row(connection, request_id)
         return _request_from_row(updated)
 
@@ -314,7 +345,7 @@ class RequestRepository:
                 """,
                 (
                     browser_state.value,
-                    pause_code,
+                    _safe_persisted_code(pause_code),
                     _format_datetime(paused_at) if paused_at else None,
                     int(pause_notified),
                 ),
@@ -399,7 +430,16 @@ class RequestRepository:
                 )
                 """
             )
+            existing_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(xhs_requests)")
+            }
+            is_phase1_schema = "detected_title" in existing_columns
+            if is_phase1_schema:
+                connection.execute("DROP INDEX IF EXISTS ux_xhs_requests_request_key")
             _migrate_request_columns(connection)
+            if is_phase1_schema:
+                _rekey_phase1_requests(connection)
+            _sanitize_stored_note_urls(connection)
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_xhs_requests_mention_id "
                 "ON xhs_requests (mention_id)"
@@ -469,12 +509,72 @@ def _migrate_request_columns(connection: sqlite3.Connection) -> None:
     )
 
 
-def _update(connection: sqlite3.Connection, request_id: int, values: dict[str, Any]) -> None:
-    assignments = ", ".join(f"{column} = ?" for column in values)
-    connection.execute(
-        f"UPDATE xhs_requests SET {assignments} WHERE id = ?",
-        (*values.values(), request_id),
+def _rekey_phase1_requests(connection: sqlite3.Connection) -> None:
+    """Replace Phase 1's JSON serialization hash before restoring its unique index."""
+    rows = connection.execute(
+        """
+        SELECT id, note_id, sender_user_id, comment_text
+        FROM xhs_requests ORDER BY id ASC
+        """
+    ).fetchall()
+    seen_keys: set[str] = set()
+    surviving: list[tuple[str, int]] = []
+    duplicate_ids: list[int] = []
+    for row in rows:
+        key = _request_key_values(
+            row["note_id"], row["sender_user_id"], row["comment_text"]
+        )
+        if key in seen_keys:
+            duplicate_ids.append(row["id"])
+        else:
+            seen_keys.add(key)
+            surviving.append((key, row["id"]))
+    if duplicate_ids:
+        connection.executemany(
+            "DELETE FROM xhs_requests WHERE id = ?",
+            ((request_id,) for request_id in duplicate_ids),
+        )
+    connection.executemany(
+        "UPDATE xhs_requests SET request_key = ? WHERE id = ?", surviving
     )
+
+
+def _sanitize_stored_note_urls(connection: sqlite3.Connection) -> None:
+    rows = connection.execute("SELECT id, note_url FROM xhs_requests").fetchall()
+    sanitized: list[tuple[str, int]] = []
+    for row in rows:
+        note_url = _safe_note_url(row["note_url"])
+        if note_url != row["note_url"]:
+            sanitized.append((note_url, row["id"]))
+    if sanitized:
+        connection.executemany(
+            "UPDATE xhs_requests SET note_url = ? WHERE id = ?", sanitized
+        )
+
+
+def _compare_and_update(
+    connection: sqlite3.Connection,
+    request_id: int,
+    expected_status: RequestStatus,
+    values: dict[str, Any],
+) -> bool:
+    assignments = ", ".join(f"{column} = ?" for column in values)
+    cursor = connection.execute(
+        f"UPDATE xhs_requests SET {assignments} WHERE id = ? AND status = ?",
+        (*values.values(), request_id, expected_status.value),
+    )
+    return cursor.rowcount == 1
+
+
+def _compare_and_update_reply(
+    connection: sqlite3.Connection, request_id: int, values: dict[str, Any]
+) -> bool:
+    assignments = ", ".join(f"{column} = ?" for column in values)
+    cursor = connection.execute(
+        f"UPDATE xhs_requests SET {assignments} WHERE id = ? AND reply_status = ?",
+        (*values.values(), request_id, ReplyStatus.PENDING.value),
+    )
+    return cursor.rowcount == 1
 
 
 def _require_row(connection: sqlite3.Connection, request_id: int) -> sqlite3.Row:
@@ -497,11 +597,40 @@ def _validate_mention(mention: NewMention) -> None:
 
 
 def _request_key(mention: NewMention) -> str:
-    normalized = " ".join(unicodedata.normalize("NFKC", mention.comment_text).split()).casefold()
+    return _request_key_values(
+        mention.note_id, mention.sender_user_id, mention.comment_text
+    )
+
+
+def _request_key_values(note_id: str, sender_user_id: str, comment_text: str) -> str:
+    normalized = " ".join(unicodedata.normalize("NFKC", comment_text).split()).casefold()
     payload = json.dumps(
-        [mention.note_id, mention.sender_user_id, normalized], ensure_ascii=False
+        [note_id, sender_user_id, normalized], ensure_ascii=False
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _safe_note_url(note_url: str) -> str:
+    try:
+        parts = urlsplit(note_url)
+    except ValueError as error:
+        raise ValueError("note_url must be a valid URL") from error
+    if "@" in parts.netloc:
+        raise ValueError("note_url must not contain credentials")
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def _safe_persisted_code(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("persisted code must be a string")
+    if (
+        not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}", value)
+        or re.search(r"token|key|cookie|secret|password|authorization", value, re.IGNORECASE)
+    ):
+        return "REDACTED"
+    return value
 
 
 def _resolution_values(resolution: Resolution) -> dict[str, Any]:

@@ -1,9 +1,12 @@
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 
 import pytest
 
+import xhsmovieassistant.repository as repository_module
 from xhsmovieassistant.models import (
     BrowserState,
     MediaMatch,
@@ -238,3 +241,178 @@ def test_get_and_recent_validate_requests_and_limit(tmp_path) -> None:
     assert len(repo.recent(1)) == 1
     with pytest.raises(ValueError):
         repo.recent(0)
+
+
+def test_transition_uses_compare_and_swap_when_two_workers_read_new_state(
+    tmp_path, monkeypatch
+) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+    barrier = _barrier_after_two_request_reads(monkeypatch)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        futures = [
+            workers.submit(repo.transition, saved.request.id, RequestStatus.FAILED),
+            workers.submit(repo.transition, saved.request.id, RequestStatus.FETCHED),
+        ]
+    outcomes = [future.exception() or future.result() for future in futures]
+
+    assert barrier["calls"] >= 2
+    assert sum(isinstance(outcome, InvalidTransition) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, type(saved.request)) for outcome in outcomes) == 1
+    assert repo.get(saved.request.id).status in {RequestStatus.FAILED, RequestStatus.FETCHED}
+
+
+def test_mark_reply_compares_pending_state_before_recording_reply(tmp_path, monkeypatch) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+    _barrier_after_two_request_reads(monkeypatch)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        futures = [
+            workers.submit(repo.mark_reply, saved.request.id, "reply-1"),
+            workers.submit(repo.mark_reply, saved.request.id, "reply-2"),
+        ]
+    outcomes = [future.exception() or future.result() for future in futures]
+
+    assert sum(isinstance(outcome, InvalidTransition) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, type(saved.request)) for outcome in outcomes) == 1
+    assert repo.get(saved.request.id).reply_id in {"reply-1", "reply-2"}
+
+
+def test_mark_reply_persists_failure_and_keeps_sent_reply_terminal(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    failed = repo.save_mention(make_mention("failed"))
+    sent = repo.save_mention(make_mention("sent", "想看沙丘"))
+
+    failed_reply = repo.mark_reply(
+        failed.request.id, status=ReplyStatus.FAILED
+    )
+    sent_reply = repo.mark_reply(sent.request.id, "reply-1")
+
+    assert failed_reply.reply_status is ReplyStatus.FAILED
+    assert failed_reply.reply_id is None
+    assert repo.mark_reply(sent.request.id, "reply-1") == sent_reply
+    with pytest.raises(InvalidTransition):
+        repo.mark_reply(sent.request.id, status=ReplyStatus.FAILED)
+
+
+def test_migration_rekeys_real_phase1_schema_and_discards_semantic_collision(tmp_path) -> None:
+    database_path = tmp_path / "phase1.db"
+    first_text = "想看 星际穿越"
+    duplicate_text = "想看　星际穿越"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE xhs_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id TEXT NOT NULL,
+                note_url TEXT NOT NULL,
+                mention_id TEXT NOT NULL,
+                sender_user_id TEXT NOT NULL,
+                comment_id TEXT NOT NULL,
+                comment_text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                note_title TEXT,
+                note_content TEXT,
+                note_author_id TEXT,
+                note_author_name TEXT,
+                detected_title TEXT,
+                media_type TEXT,
+                year INTEGER,
+                season INTEGER,
+                mp_id TEXT,
+                confidence REAL,
+                error TEXT,
+                processed_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX ux_xhs_requests_mention_id ON xhs_requests (mention_id)"
+        )
+        for mention_id, comment_text in (("m1", first_text), ("m2", duplicate_text)):
+            old_key = _phase1_request_key("note-1", "user-1", comment_text)
+            if mention_id == "m2":
+                old_key = f"{old_key}{mention_id}"
+            connection.execute(
+                """
+                INSERT INTO xhs_requests (
+                    note_id, note_url, mention_id, sender_user_id, comment_id, comment_text,
+                    created_at, status, request_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "note-1", "https://example.test/note-1?xsec_token=secret", mention_id, "user-1",
+                    f"comment-{mention_id}", comment_text, "2026-09-07T12:00:00+00:00",
+                    "NEW", old_key,
+                ),
+            )
+
+    repo = RequestRepository(database_path)
+    repeated = repo.save_mention(make_mention("m3", duplicate_text))
+
+    assert repeated.created is False
+    assert len(repo.recent(10)) == 1
+    assert repeated.request.mention_id == "m1"
+    assert repeated.request.note_url == "https://example.test/note-1"
+
+
+def test_repository_strips_or_redacts_sensitive_persistence_inputs(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    mention = NewMention(
+        note_id="note-1",
+        note_url="https://www.xiaohongshu.com/explore/note-1?xsec_token=secret#token",
+        mention_id="m1",
+        sender_user_id="user-1",
+        comment_id="comment-1",
+        comment_text="想看星际穿越",
+        created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+
+    saved = repo.save_mention(mention)
+    failed = repo.transition(saved.request.id, RequestStatus.FAILED, error="token=secret")
+    paused = repo.set_runtime_state(
+        BrowserState.PAUSED, pause_code="cookie=secret", pause_notified=True
+    )
+
+    assert saved.request.note_url == "https://www.xiaohongshu.com/explore/note-1"
+    assert failed.error == "REDACTED"
+    assert paused.pause_code == "REDACTED"
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        persisted = " ".join(
+            str(value)
+            for row in connection.execute("SELECT note_url, error FROM xhs_requests")
+            for value in row
+        )
+    assert "secret" not in persisted
+
+
+def _barrier_after_two_request_reads(monkeypatch) -> dict[str, int]:
+    original = repository_module._require_row
+    state = {"calls": 0}
+    barrier = Barrier(2)
+
+    def synchronized(connection, request_id):
+        row = original(connection, request_id)
+        if state["calls"] < 2:
+            state["calls"] += 1
+            barrier.wait()
+        return row
+
+    monkeypatch.setattr(repository_module, "_require_row", synchronized)
+    return state
+
+
+def _phase1_request_key(note_id: str, sender_user_id: str, comment_text: str) -> str:
+    import hashlib
+    import json
+    import unicodedata
+
+    normalized = " ".join(unicodedata.normalize("NFKC", comment_text).split()).casefold()
+    payload = json.dumps(
+        [note_id, sender_user_id, normalized], ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
