@@ -72,6 +72,15 @@ def test_readme_documents_safe_moviepilot_operator_flow() -> None:
     assert "原始通知" not in readme
 
 
+def test_readme_documents_browser_and_public_reply_recovery() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    required_statuses = ("`ERROR`", "`PENDING`", "`SENT`", "`POSTED`", "`FAILED`")
+    assert all(status in readme for status in required_statuses)
+    assert "不会自动重试" in readme
+    assert "人工处理" in readme
+
+
 def test_repository_does_not_track_runtime_secrets() -> None:
     tracked = subprocess.check_output(
         ["git", "ls-files"], cwd=ROOT, text=True

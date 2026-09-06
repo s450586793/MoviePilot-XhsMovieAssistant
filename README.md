@@ -27,9 +27,11 @@
 
 ## 状态说明
 
-浏览器状态：`READY` 表示可继续；`PAUSED` 表示风险控制、会话或浏览器问题已暂停轮询。登录状态 `WAITING_FOR_SCAN` 表示等待扫码，`LOGGED_OUT` 表示已退出。活动状态 `IDLE` 表示空闲，`POLL` 表示正在轮询，`START_FAILED` 或 `FAILED` 表示需要查看下方恢复步骤。
+浏览器状态：`READY` 表示可继续；`PAUSED` 表示风险控制、会话或浏览器问题已暂停轮询；`ERROR` 表示最近一次浏览器操作失败，先检查页面显示的错误码和对应恢复项，再恢复轮询。登录状态 `WAITING_FOR_SCAN` 表示等待扫码，`LOGGED_OUT` 表示已退出。活动状态 `IDLE` 表示空闲，`POLL` 表示正在轮询，`START_FAILED` 或 `FAILED` 表示需要查看下方恢复步骤。
 
 请求状态：`NEW` 为待处理，`FETCHED` 为已获取，`RESOLVING` 为 AI 正在识别；`NEED_CONFIRMATION` 表示信息不足或有歧义，需要人工确认；`NOT_MEDIA` 表示不是影视请求；`MATCHED` 表示已找到候选；`DRY_RUN_MATCHED` 表示 dry-run 匹配成功；`ALREADY_IN_LIBRARY` 和 `ALREADY_SUBSCRIBED` 表示无需再次订阅；`SUBSCRIBED` 表示已创建订阅；`FAILED` 表示本次失败；`IGNORED` 表示人工忽略。
+
+公开回复状态只在明确启用该可选高风险功能后出现：`PENDING` 表示等待发送；`SENT` 表示已成功发出（`POSTED`）；`FAILED` 表示发送失败。公开回复失败不会自动重试或隐式重发，避免产生重复留言；先按错误类型恢复浏览器或登录问题，再人工处理是否保留失败记录并等待后续新请求，不要假定“重新处理”会再次发送公开回复。
 
 可通过请求列表的“人工确认”“重新处理”或“忽略”操作处理 `NEED_CONFIRMATION`、`FAILED` 和未处理条目；恢复后再轮询。
 
@@ -42,6 +44,8 @@
 | Chromium 安装失败或缺少系统库 | 按 MoviePilot 部署镜像/宿主机的 Chromium 依赖说明补齐库后，重新点击“安装 Chromium”。不要把浏览器依赖写入插件配置。 |
 | AI 测试失败或 AI 未启用 | 先在 MoviePilot 系统设置中配置并启用 AI，再使用插件的“测试 AI”确认；插件不保存模型凭据。 |
 | `NEED_CONFIRMATION` 或歧义结果 | 使用“人工确认”指定唯一影片/剧集，或选择“忽略”；不要仅凭相近标题开启真实订阅。 |
+| 浏览器显示 `ERROR` | 查看刚执行操作的错误码；修复 Chromium、登录或站点验证问题后点击“恢复轮询”。 |
+| 公开回复为 `FAILED` | 不会自动重试或重新发送。先修复根因，再人工处理；不要将请求“重新处理”当作公开回复重发操作。 |
 | `PAUSED`、`FAILED` 或 `START_FAILED` | 先处理页面显示的浏览器/登录原因，再点击“恢复轮询”；恢复前保持真实订阅关闭。 |
 
 ## 实现证据
