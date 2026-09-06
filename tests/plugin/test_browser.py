@@ -448,6 +448,30 @@ def test_install_chromium_preserves_normal_encoded_url(tmp_path, monkeypatch) ->
 @pytest.mark.parametrize(
     "output",
     [
+        "https://tokenizer.example/a?build=123",
+        "https://downloads.example/token-cache?build=123",
+        "https://monkey.example/a?build=123",
+    ],
+)
+def test_install_chromium_preserves_sensitive_substrings_outside_query_keys(
+    tmp_path, monkeypatch, output: str
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout=output, stderr=""
+        ),
+    )
+
+    result = BrowserManager(tmp_path, "rednote", None, lambda: None).install_chromium()
+
+    assert result.message == output
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
         "Cookie: session=topsecret",
         "Set-Cookie: session=topsecret; HttpOnly",
         "MOVIEPILOT_API_TOKEN=topsecret",

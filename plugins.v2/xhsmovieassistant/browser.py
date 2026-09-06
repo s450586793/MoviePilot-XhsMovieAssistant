@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
-from urllib.parse import unquote
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 _SITE_ORIGINS = {
@@ -29,7 +29,9 @@ _PROFILE_LOCK = threading.Lock()
 _LOCK_OWNER = threading.local()
 _URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _SENSITIVE_QUERY_PATTERN = re.compile(
-    r"(?:^|[?&])[^=&]*(token|key|secret|password|passwd|authorization|credential)[^=&]*=",
+    r"(?:^|[_-])"
+    r"(?:cookie|token|key|secret|password|passwd|authorization|credential)"
+    r"(?:$|[_-])",
     re.IGNORECASE,
 )
 _SENSITIVE_TEXT_PATTERN = re.compile(
@@ -377,7 +379,7 @@ def _sanitize_line(line: str) -> str:
     for _ in range(3):
         if (
             _SENSITIVE_TEXT_PATTERN.search(value)
-            or _SENSITIVE_QUERY_PATTERN.search(value)
+            or _has_sensitive_query(value)
             or _BEARER_PATTERN.search(value)
             or _JWT_PATTERN.search(value)
             or _USERINFO_URL_PATTERN.search(value)
@@ -391,8 +393,22 @@ def _sanitize_line(line: str) -> str:
     def replace(match: re.Match[str]) -> str:
         url = match.group(0)
         authority = url.split("/", 3)[2]
-        if "@" in authority or _SENSITIVE_QUERY_PATTERN.search(url):
+        if "@" in authority or _has_sensitive_query(url):
             return "[REDACTED_URL]"
         return url
 
     return _URL_PATTERN.sub(replace, line)
+
+
+def _has_sensitive_query(value: str) -> bool:
+    for match in _URL_PATTERN.finditer(value):
+        try:
+            query = urlsplit(match.group(0)).query
+        except ValueError:
+            continue
+        if any(
+            _SENSITIVE_QUERY_PATTERN.search(name)
+            for name, _ in parse_qsl(query, keep_blank_values=True)
+        ):
+            return True
+    return False
