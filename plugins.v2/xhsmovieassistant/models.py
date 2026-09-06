@@ -41,7 +41,7 @@ class BrowserState(StrEnum):
 class _DomainModel(BaseModel):
     """Common validation settings for serializable domain values."""
 
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, strict=True)
 
 
 class NoteContext(_DomainModel):

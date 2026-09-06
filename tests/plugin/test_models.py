@@ -70,6 +70,8 @@ def test_resolution_accepts_a_concrete_media_result() -> None:
         {"status": "not_media", "confidence": 1.1},
         {"status": "need_confirmation", "confidence": 0.5, "year": 1873},
         {"status": "need_confirmation", "confidence": 0.5, "season": 0},
+        {"status": "need_confirmation", "confidence": 0.5, "year": "2014"},
+        {"status": "need_confirmation", "confidence": True},
     ],
 )
 def test_resolution_rejects_invalid_status_dependent_or_bounded_values(
@@ -101,6 +103,25 @@ def test_media_match_requires_a_stable_identity_and_valid_score() -> None:
             source_id="",
             score=1.1,
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [("year", "2014"), ("score", True)],
+)
+def test_media_match_rejects_coerced_numeric_inputs(
+    field_name: str, value: object
+) -> None:
+    values = {
+        "title": "Interstellar",
+        "media_type": "movie",
+        "source": "tmdb",
+        "source_id": "157336",
+        field_name: value,
+    }
+
+    with pytest.raises(ValidationError):
+        MediaMatch(**values)
 
 
 def test_processing_result_preserves_nested_models_and_terminal_status() -> None:
