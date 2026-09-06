@@ -141,9 +141,16 @@ class XhsMovieAssistant(_PluginBase):
             self._repository.recover_interrupted()
             self._build_runtime(generation, stop_event)
         except Exception:
-            self._enabled = False
-            self._cached_status["activity"] = "START_FAILED"
-            self._clear_runtime(keep_repository=True)
+            with self._worker_lock:
+                if (
+                    generation != self._generation
+                    or stop_event is not self._stop_event
+                    or stop_event.is_set()
+                ):
+                    return
+                self._enabled = False
+                self._cached_status["activity"] = "START_FAILED"
+                self._clear_runtime(keep_repository=True)
 
     def get_state(self) -> bool:
         """Return the validated MoviePilot enable flag."""

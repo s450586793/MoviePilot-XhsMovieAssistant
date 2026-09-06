@@ -682,6 +682,57 @@ def test_stop_during_runtime_build_prevents_stale_runtime_publication(
     assert calls == []
 
 
+def test_stale_initializer_failure_does_not_clear_newer_runtime(
+    tmp_path, monkeypatch
+):
+    plugin = _plugin(tmp_path)
+    first_build_started = threading.Event()
+    finish_first_build = threading.Event()
+    browser_count = 0
+
+    def build_browser(*args, **kwargs):
+        nonlocal browser_count
+        browser_count += 1
+        if browser_count == 1:
+            first_build_started.set()
+            finish_first_build.wait(timeout=2)
+        return SimpleNamespace(_active_context=None, build_number=browser_count)
+
+    monkeypatch.setattr(entrypoint, "BrowserManager", build_browser)
+    config = {"enabled": True, "authorized_user_ids": "u1"}
+    first_initializer = threading.Thread(
+        target=plugin.init_plugin,
+        args=(config,),
+    )
+
+    first_initializer.start()
+    try:
+        assert first_build_started.wait(timeout=1)
+        plugin.init_plugin(config)
+        current_runtime = (
+            plugin._browser,
+            plugin._resolver,
+            plugin._moviepilot,
+            plugin._service,
+        )
+        current_status = dict(plugin._cached_status)
+        assert plugin.get_state() is True
+        assert all(component is not None for component in current_runtime)
+        assert current_status["browser"] == entrypoint.BrowserState.READY.value
+        assert current_status["activity"] == "IDLE"
+    finally:
+        finish_first_build.set()
+        first_initializer.join(timeout=1)
+
+    assert first_initializer.is_alive() is False
+    assert plugin.get_state() is True
+    assert plugin._browser is current_runtime[0]
+    assert plugin._resolver is current_runtime[1]
+    assert plugin._moviepilot is current_runtime[2]
+    assert plugin._service is current_runtime[3]
+    assert plugin._cached_status == current_status
+
+
 def test_stop_boundary_rejects_all_workers_until_next_initialized_generation(
     tmp_path,
 ):
