@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pytest
+
 from xhsmovieassistant.request_builder import build_media_request, sanitize_text
 from xhsmovieassistant.xhs_contracts import parse_mentions_payload
 
@@ -90,3 +92,48 @@ def test_build_media_request_clamps_unknown_note_type_to_unknown() -> None:
     request = build_media_request(_mention(), Detail(type="article"))
 
     assert request.note.type == "unknown"
+
+
+def test_build_media_request_removes_credentials_from_note_url_json() -> None:
+    request = build_media_request(
+        _mention(),
+        Detail(url="https://www.xiaohongshu.com/explore/note-1?xsec_token=sentinel#fragment"),
+    )
+
+    assert request.note.url == "https://www.xiaohongshu.com/explore/note-1"
+    assert "sentinel" not in request.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.xiaohongshu.com/explore/note-1",
+        "https://attacker.example/explore/note-1",
+        "https://user:password@www.xiaohongshu.com/explore/note-1",
+        "https://www.xiaohongshu.com/discovery/item/note-1",
+    ],
+)
+def test_build_media_request_rejects_untrusted_note_url(url: str) -> None:
+    with pytest.raises(ValueError, match="note URL"):
+        build_media_request(_mention(), Detail(url=url))
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_url"),
+    [
+        (
+            "https://www.xiaohongshu.com/explore/note-1",
+            "https://www.xiaohongshu.com/explore/note-1",
+        ),
+        (
+            "https://www.rednote.com/discovery/item/note-1",
+            "https://www.rednote.com/discovery/item/note-1",
+        ),
+    ],
+)
+def test_build_media_request_keeps_expected_xhs_note_urls(
+    url: str, expected_url: str
+) -> None:
+    request = build_media_request(_mention(), Detail(url=url))
+
+    assert request.note.url == expected_url

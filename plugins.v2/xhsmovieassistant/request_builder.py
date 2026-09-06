@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable
 from typing import Protocol
 import unicodedata
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from .models import MediaRequest, NoteContext
 from .xhs_contracts import TransientMention
@@ -49,7 +50,7 @@ def build_media_request(mention: TransientMention, detail: NoteDetailLike) -> Me
         trigger_comment=sanitize_text(mention.comment_text, TEXT_LIMITS["comment"]),
         note=NoteContext(
             id=mention.note_id,
-            url=sanitize_text(detail.url, 2048),
+            url=_safe_note_url(detail.url, mention.note_id),
             type=note_type if note_type in {"normal", "video", "unknown"} else "unknown",
             title=sanitize_text(detail.title, TEXT_LIMITS["title"]),
             content=sanitize_text(detail.content, TEXT_LIMITS["content"]),
@@ -57,6 +58,29 @@ def build_media_request(mention: TransientMention, detail: NoteDetailLike) -> Me
             relevant_comments=_relevant_comments(detail.comments),
         ),
     )
+
+
+def _safe_note_url(value: object, note_id: str) -> str:
+    url = sanitize_text(value, 2048)
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("note URL is invalid") from error
+    expected_paths = {
+        "www.xiaohongshu.com": f"/explore/{quote(note_id, safe='')}",
+        "www.rednote.com": f"/discovery/item/{quote(note_id, safe='')}",
+    }
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or expected_paths.get(host) != parsed.path
+    ):
+        raise ValueError("note URL must use an expected Xiaohongshu or RedNote path")
+    return urlunsplit(("https", host, parsed.path, "", ""))
 
 
 def _relevant_comments(values: object) -> list[str]:
