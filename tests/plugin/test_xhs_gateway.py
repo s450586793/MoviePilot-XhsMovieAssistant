@@ -119,6 +119,7 @@ class FakeKeyboard:
         if self.page.keyboard_error is not None:
             raise self.page.keyboard_error
         self.page.inserted_text = text
+        self.page.input_text = text
 
 
 class FakeLocator:
@@ -136,6 +137,8 @@ class FakeLocator:
             comment_id = self.selector.removeprefix("#comment-")
             threshold = self.page.comment_ids.get(comment_id)
             return int(threshold is not None and self.page.scroll_count >= threshold)
+        if self.selector == ".el-message--success:visible, [data-reply-success]:visible":
+            return int(self.page.success_visible)
         return int(self.selector in self.page.present_selectors)
 
     def locator(self, selector: str) -> "FakeLocator":
@@ -154,6 +157,12 @@ class FakeLocator:
         if self.page.fill_error is not None:
             raise self.page.fill_error
         self.page.filled_text = text
+        self.page.input_text = text
+
+    def text_content(self, **kwargs: object) -> str:
+        if self.selector == "div.input-box div.content-edit p.content-input":
+            return self.page.input_text
+        return ""
 
     def click(self, **kwargs: object) -> None:
         if self.kind == "reply":
@@ -163,6 +172,15 @@ class FakeLocator:
             self.page.submit_clicks += 1
             if self.page.submit_error is not None:
                 raise self.page.submit_error
+            if self.page.post_submit_risk_code is not None:
+                self.page.active_risk_code = self.page.post_submit_risk_code
+            if self.page.submit_response_status is not None:
+                response = FakeResponse(
+                    "https://edith.xiaohongshu.com/api/sns/web/v1/comment/post",
+                    status=self.page.submit_response_status,
+                )
+                for callback in tuple(self.page.listeners):
+                    callback(response)
 
     def is_enabled(self, **kwargs: object) -> bool:
         return self.page.submit_enabled
@@ -173,14 +191,19 @@ class FakePage:
         self.url = "https://www.xiaohongshu.com/notification"
         self.actions: list[str] = []
         self.responses: list[FakeResponse] = []
+        self.delayed_responses: list[tuple[int, FakeResponse]] = []
+        self.event_pumps = 0
         self.listeners: list[object] = []
         self.goto_status = 200
         self.reload_status = 200
         self.goto_url = ""
         self.wait_timeouts: list[int] = []
         self.initial_state: object = note_state()
+        self.note_state_sequence: list[object] = []
+        self.note_state_samples = 0
         self.initial_state_timeout = False
         self.wait_for_function_timeout: int | None = None
+        self.wait_for_function_arg: object = None
         self.body_text = ""
         self.dom_text: dict[str, str] = {}
         self.dom_text_lists: dict[str, list[str]] = {}
@@ -197,6 +220,13 @@ class FakePage:
         self.fill_error: Exception | None = None
         self.keyboard_error: Exception | None = None
         self.submit_error: Exception | None = None
+        self.submit_response_status: int | None = None
+        self.post_submit_risk_code: str | None = None
+        self.active_risk_code: str | None = None
+        self.reply_success_after_pumps: int | None = 1
+        self.post_submit_pumps = 0
+        self.success_visible = False
+        self.input_text = ""
         self.filled_text: str | None = None
         self.inserted_text: str | None = None
         self.mouse = FakeMouse(self)
@@ -226,12 +256,32 @@ class FakePage:
 
     def wait_for_timeout(self, timeout: int) -> None:
         self.wait_timeouts.append(timeout)
+        self.event_pumps += 1
+        due = [
+            response
+            for pump, response in self.delayed_responses
+            if pump == self.event_pumps
+        ]
+        for response in due:
+            for callback in tuple(self.listeners):
+                callback(response)
+        if self.submit_clicks:
+            self.post_submit_pumps += 1
+            if (
+                self.reply_success_after_pumps is not None
+                and self.post_submit_pumps >= self.reply_success_after_pumps
+            ):
+                self.input_text = ""
 
     def wait_for_function(self, expression: str, **kwargs: object) -> None:
         assert "noteDetailMap" in expression
         self.wait_for_function_timeout = int(kwargs["timeout"])
+        self.wait_for_function_arg = kwargs.get("arg")
         if self.initial_state_timeout:
             raise TimeoutError("initial state timed out")
+        for state in self.note_state_sequence:
+            self.note_state_samples += 1
+            self.initial_state = state
 
     def evaluate(self, expression: str) -> object:
         if "commentDisabled" in expression:
@@ -262,6 +312,13 @@ class FakeManager:
     ) -> OperationResult:
         assert page is self.page
         self.detected_statuses.append(response_status)
+        if response_status is None and page.active_risk_code is not None:
+            return OperationResult(
+                success=False,
+                code=page.active_risk_code,
+                message="post-submit risk",
+                should_pause=True,
+            )
         return self.risk_results.get(response_status, OperationResult(success=True))
 
 
@@ -308,7 +365,23 @@ def test_fetch_mentions_ignores_non_target_response_and_times_out_boundedly(
     with pytest.raises(XhsContractError, match="not observed"):
         gateway.fetch_mentions()
 
-    assert fake_page.wait_timeouts == [20_000]
+    assert sum(fake_page.wait_timeouts) <= 20_000
+    assert max(fake_page.wait_timeouts) <= 100
+    assert fake_page.listeners == []
+
+
+def test_fetch_mentions_returns_after_a_delayed_response_without_full_timeout(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.delayed_responses = [
+        (2, FakeResponse(MENTIONS_API_URL, payload=mention_payload()))
+    ]
+
+    mentions = gateway.fetch_mentions()
+
+    assert mentions[0].mention_id == "mention-0"
+    assert fake_page.wait_timeouts == [100, 100]
+    assert sum(fake_page.wait_timeouts) < 20_000
     assert fake_page.listeners == []
 
 
@@ -420,6 +493,81 @@ def test_fetch_note_unwraps_vue_state_and_extracts_fields(
     assert fake_page.wait_for_function_timeout == 15_000
 
 
+def test_fetch_note_recursively_unwraps_root_vue_value(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.initial_state = {"_value": {"_value": note_state()}}
+
+    detail = gateway.fetch_note(make_mention())
+
+    assert detail.title == "星际穿越"
+    assert detail.note_id == "note /一"
+
+
+def test_fetch_note_waits_for_the_requested_note_after_an_empty_map(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.initial_state = {}
+    fake_page.note_state_sequence = [{}, {"_value": note_state()}]
+
+    detail = gateway.fetch_note(make_mention())
+
+    assert detail.title == "星际穿越"
+    assert fake_page.wait_for_function_arg == "note /一"
+    assert fake_page.note_state_samples == 2
+
+
+def test_fetch_note_selects_only_the_matching_note_from_multiple_entries(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.initial_state = {
+        "other-note": {"note": {"noteId": "other-note", "title": "错误笔记"}},
+        "note /一:cache": {
+            "_value": {
+                "note": {
+                    "_value": {
+                        "noteId": "note /一",
+                        "title": "目标笔记",
+                        "desc": "目标正文",
+                    }
+                }
+            }
+        },
+    }
+
+    detail = gateway.fetch_note(make_mention())
+
+    assert detail.title == "目标笔记"
+    assert detail.content == "目标正文"
+
+
+def test_fetch_note_rejects_state_without_the_requested_note(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.initial_state = {
+        "other-note": {"note": {"noteId": "other-note", "title": "错误笔记"}}
+    }
+
+    with pytest.raises(XhsContractError, match="requested note") as error:
+        gateway.fetch_note(make_mention())
+
+    assert "token +/secret" not in str(error.value)
+
+
+def test_fetch_note_rejects_ambiguous_matching_entries(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.initial_state = {
+        "note /一:first": {"note": {"noteId": "note /一", "title": "版本一"}},
+        "note /一:second": {"note": {"noteId": "note /一", "title": "版本二"}},
+    }
+
+    with pytest.raises(XhsContractError, match="ambiguous") as error:
+        gateway.fetch_note(make_mention())
+
+    assert "token +/secret" not in str(error.value)
+
+
 @pytest.mark.parametrize(
     ("base_url", "expected_path"),
     [
@@ -465,7 +613,7 @@ def test_fetch_note_passes_navigation_status_to_risk_detection(
 def test_fetch_note_uses_dom_only_for_content_fallback(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
-    fake_page.initial_state = {}
+    fake_page.initial_state = {"note /一": {}}
     fake_page.dom_text = {
         "#detail-title, .title": "DOM 标题",
         "#detail-desc, .desc": "DOM 正文",
@@ -533,6 +681,66 @@ def test_reply_finds_exact_comment_after_bounded_scrolling(
     assert outcome.success is True
     assert fake_page.scroll_count == 3
     assert fake_page.reply_clicks == 1
+    assert fake_page.submit_clicks == 1
+
+
+def test_reply_reports_success_only_after_input_is_cleared(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.reply_success_after_pumps = 2
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is True
+    assert fake_page.post_submit_pumps == 2
+    assert fake_page.submit_clicks == 1
+
+
+def test_reply_returns_failure_when_click_triggers_captcha(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.post_submit_risk_code = "XHS_RISK_CONTROL"
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is False
+    assert outcome.code == "XHS_RISK_CONTROL"
+    assert fake_page.submit_clicks == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(403, "AUTH_REQUIRED"), (429, "RATE_LIMITED")],
+)
+def test_reply_returns_failure_when_click_response_is_http_risk(
+    gateway: XhsGateway,
+    manager: FakeManager,
+    fake_page: FakePage,
+    status: int,
+    code: str,
+) -> None:
+    fake_page.submit_response_status = status
+    manager.risk_results[status] = OperationResult(
+        success=False, code=code, message="post-submit risk", should_pause=True
+    )
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is False
+    assert outcome.code == code
+    assert fake_page.submit_clicks == 1
+
+
+def test_reply_returns_uncertain_failure_when_no_success_signal_arrives(
+    gateway: XhsGateway, fake_page: FakePage
+) -> None:
+    fake_page.reply_success_after_pumps = None
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is False
+    assert outcome.code == "SUBMIT_UNCONFIRMED"
+    assert sum(fake_page.wait_timeouts) <= 3_000
     assert fake_page.submit_clicks == 1
 
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any
-import unicodedata
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from .xhs_contracts import TransientMention, parse_mentions_payload
@@ -17,6 +18,8 @@ _NOTE_TIMEOUT_MS = 15_000
 _REPLY_SCROLL_ROUNDS = 10
 _REPLY_SCROLL_PIXELS = 900
 _REPLY_WAIT_MS = 250
+_REPLY_CONFIRM_TIMEOUT_MS = 3_000
+_EVENT_PUMP_MS = 100
 _PAUSE_CODES = {
     "AUTH_REQUIRED",
     "LOGIN_REQUIRED",
@@ -96,8 +99,7 @@ class XhsGateway:
                     _ensure_risk_ok(
                         self._manager, page, _response_status(reload_response)
                     )
-                    if not captured:
-                        page.wait_for_timeout(_MENTIONS_TIMEOUT_MS)
+                    _wait_for_mentions_response(page, captured)
                     if not captured:
                         raise XhsContractError("mentions response was not observed")
                     _ensure_risk_ok(
@@ -125,7 +127,55 @@ class XhsGateway:
                 response = page.goto(navigation_url, wait_until="domcontentloaded")
                 _ensure_risk_ok(self._manager, page, _response_status(response))
                 page.wait_for_function(
-                    "() => Boolean(window.__INITIAL_STATE__?.note?.noteDetailMap)",
+                    """(noteId) => {
+                        const unwrap = (value) => {
+                            const seen = new Set();
+                            while (
+                                value && typeof value === 'object' &&
+                                value._value && typeof value._value === 'object' &&
+                                !seen.has(value)
+                            ) {
+                                seen.add(value);
+                                value = value._value;
+                            }
+                            return value;
+                        };
+                        const root = unwrap(
+                            window.__INITIAL_STATE__?.note?.noteDetailMap
+                        );
+                        if (!root || typeof root !== 'object' || Array.isArray(root)) {
+                            return false;
+                        }
+                        const entries = Object.entries(root);
+                        const read = ([key, raw]) => {
+                            const entry = unwrap(raw);
+                            const note = unwrap(entry?.note ?? entry);
+                            if (!note || typeof note !== 'object') return null;
+                            const declared = String(note.noteId ?? note.note_id ?? '');
+                            return { key, declared };
+                        };
+                        const exact = entries.find(([key]) => key === noteId);
+                        if (exact) {
+                            const candidate = read(exact);
+                            return Boolean(
+                                candidate &&
+                                (!candidate.declared || candidate.declared === noteId)
+                            );
+                        }
+                        const candidates = entries.map(read).filter(Boolean);
+                        const declared = candidates.filter(
+                            (candidate) => candidate.declared === noteId
+                        );
+                        if (declared.length) return declared.length === 1;
+                        const suffixes = candidates.filter(
+                            (candidate) =>
+                                !candidate.declared &&
+                                candidate.key.startsWith(noteId) &&
+                                ':_@.'.includes(candidate.key.charAt(noteId.length))
+                        );
+                        return suffixes.length === 1;
+                    }""",
+                    arg=mention.note_id,
                     timeout=_NOTE_TIMEOUT_MS,
                 )
                 raw_map = page.evaluate(
@@ -201,13 +251,26 @@ class XhsGateway:
                     return _reply_failure(
                         "SUBMIT_DISABLED", "The reply submit control is disabled"
                     )
+                submit_statuses: list[int] = []
+
+                def on_submit_response(response: Any) -> None:
+                    status = _response_status(response)
+                    if status in {403, 429}:
+                        submit_statuses.append(status)
+
+                page.on("response", on_submit_response)
                 try:
-                    submit.click(timeout=2_000)
-                except Exception:
-                    return _reply_failure(
-                        "SUBMIT_FAILED", "The reply submission result is uncertain"
+                    try:
+                        submit.click(timeout=2_000)
+                    except Exception:
+                        return _reply_failure(
+                            "SUBMIT_FAILED", "The reply submission result is uncertain"
+                        )
+                    return _confirm_reply_submission(
+                        self._manager, page, input_locator, submit_statuses
                     )
-                return ReplyOutcome(success=True, message="Reply submitted")
+                finally:
+                    page.remove_listener("response", on_submit_response)
         except Exception as error:
             if _is_timeout(error):
                 return _reply_failure("TIMEOUT", "The reply operation timed out")
@@ -219,6 +282,15 @@ def _is_mentions_response(response: Any) -> bool:
         return urlsplit(str(response.url)).path == _MENTIONS_PATH
     except ValueError:
         return False
+
+
+def _wait_for_mentions_response(page: Any, captured: Mapping[str, object]) -> None:
+    deadline = monotonic() + (_MENTIONS_TIMEOUT_MS / 1_000)
+    remaining_ms = _MENTIONS_TIMEOUT_MS
+    while not captured and remaining_ms > 0 and monotonic() < deadline:
+        wait_ms = min(_EVENT_PUMP_MS, remaining_ms)
+        page.wait_for_timeout(wait_ms)
+        remaining_ms -= wait_ms
 
 
 def _validate_mentions_payload(payload: object) -> None:
@@ -265,24 +337,60 @@ def _note_urls(base_url: str, mention: TransientMention) -> tuple[str, str]:
 
 
 def _note_from_map(raw_map: Mapping[object, object], note_id: str) -> Mapping[str, Any]:
-    entry = raw_map.get(note_id)
-    if entry is None:
-        entry = next(iter(raw_map.values()), None)
+    root = _unwrap_mapping(raw_map)
+    exact = root.get(note_id)
+    if isinstance(exact, Mapping):
+        note = _note_from_entry(exact)
+        declared = _declared_note_id(note)
+        if not declared or declared == note_id:
+            return note
+        raise XhsContractError("requested note was not present in note detail state")
+
+    declared_matches = []
+    suffix_matches = []
+    for raw_key, raw_entry in root.items():
+        if not isinstance(raw_key, str) or not isinstance(raw_entry, Mapping):
+            continue
+        note = _note_from_entry(raw_entry)
+        declared = _declared_note_id(note)
+        if declared == note_id:
+            declared_matches.append(note)
+        elif not declared and _is_note_key_suffix(raw_key, note_id):
+            suffix_matches.append(note)
+
+    matches = declared_matches or suffix_matches
+    if len(matches) > 1:
+        raise XhsContractError("requested note was ambiguous in note detail state")
+    if not matches:
+        raise XhsContractError("requested note was not present in note detail state")
+    return matches[0]
+
+
+def _note_from_entry(entry: Mapping[object, object]) -> Mapping[str, Any]:
     unwrapped = _unwrap_mapping(entry)
-    note = _unwrap_mapping(unwrapped.get("note", unwrapped))
-    return note
+    return _unwrap_mapping(unwrapped.get("note", unwrapped))
+
+
+def _declared_note_id(note: Mapping[str, Any]) -> str:
+    return _sanitize_text(note.get("noteId") or note.get("note_id"), 512)
+
+
+def _is_note_key_suffix(key: str, note_id: str) -> bool:
+    if not key.startswith(note_id) or len(key) <= len(note_id):
+        return False
+    return key[len(note_id)] in {":", "_", "@", "."}
 
 
 def _unwrap_mapping(value: object) -> Mapping[str, Any]:
     current = value
-    for _ in range(4):
-        if not isinstance(current, Mapping):
-            return {}
+    seen: set[int] = set()
+    while isinstance(current, Mapping) and id(current) not in seen:
+        seen.add(id(current))
         wrapped = current.get("_value")
         if not isinstance(wrapped, Mapping):
             return current
         current = wrapped
-    return current if isinstance(current, Mapping) else {}
+    return {}
 
 
 def _build_note_detail(
@@ -407,6 +515,50 @@ def _risk_outcome(manager: Any, page: Any, status: int | None) -> ReplyOutcome |
         return None
     code = result.code if result.code in _PAUSE_CODES else "TEMPORARY_FAILURE"
     return _reply_failure(code, "Browser operation paused")
+
+
+def _confirm_reply_submission(
+    manager: Any,
+    page: Any,
+    input_locator: Any,
+    response_statuses: list[int],
+) -> ReplyOutcome:
+    deadline = monotonic() + (_REPLY_CONFIRM_TIMEOUT_MS / 1_000)
+    remaining_ms = _REPLY_CONFIRM_TIMEOUT_MS
+    while True:
+        while response_statuses:
+            risk = _risk_outcome(manager, page, response_statuses.pop(0))
+            if risk is not None:
+                return risk
+        risk = _risk_outcome(manager, page, None)
+        if risk is not None:
+            return risk
+        if _reply_was_confirmed(page, input_locator):
+            return ReplyOutcome(success=True, message="Reply submitted")
+        if remaining_ms <= 0 or monotonic() >= deadline:
+            return _reply_failure(
+                "SUBMIT_UNCONFIRMED", "The reply submission could not be confirmed"
+            )
+        wait_ms = min(_EVENT_PUMP_MS, remaining_ms)
+        page.wait_for_timeout(wait_ms)
+        remaining_ms -= wait_ms
+
+
+def _reply_was_confirmed(page: Any, input_locator: Any) -> bool:
+    try:
+        if input_locator.text_content(timeout=500) == "":
+            return True
+    except Exception:
+        pass
+    try:
+        return (
+            page.locator(
+                ".el-message--success:visible, [data-reply-success]:visible"
+            ).count()
+            > 0
+        )
+    except Exception:
+        return False
 
 
 def _ensure_risk_ok(manager: Any, page: Any, status: int | None) -> None:
