@@ -25,7 +25,6 @@ _PAUSE_CODES = {
     "LOGIN_REQUIRED",
     "RATE_LIMITED",
     "SESSION_EXPIRED",
-    "TEMPORARY_FAILURE",
     "XHS_RISK_CONTROL",
 }
 
@@ -61,7 +60,7 @@ class XhsPausedError(RuntimeError):
     """Raised when browser work must pause for login or risk control."""
 
     def __init__(self, code: str) -> None:
-        self.code = code if code in _PAUSE_CODES else "TEMPORARY_FAILURE"
+        self.code = code if code in _PAUSE_CODES else "XHS_RISK_CONTROL"
         super().__init__(f"Xiaohongshu browser operation paused: {self.code}")
 
 
@@ -527,8 +526,12 @@ def _risk_outcome(manager: Any, page: Any, status: int | None) -> ReplyOutcome |
     result = manager.detect_risk(page, status)
     if result.success:
         return None
-    code = result.code if result.code in _PAUSE_CODES else "TEMPORARY_FAILURE"
-    return _reply_failure(code, "Browser operation paused")
+    if result.should_pause:
+        code = result.code if result.code in _PAUSE_CODES else "XHS_RISK_CONTROL"
+        return _reply_failure(code, "Browser operation paused")
+    return _reply_failure(
+        "TEMPORARY_FAILURE", "Browser operation temporarily failed"
+    )
 
 
 def _confirm_reply_submission(
@@ -580,8 +583,11 @@ def _reply_was_confirmed(page: Any, input_locator: Any) -> bool:
 
 def _ensure_risk_ok(manager: Any, page: Any, status: int | None) -> None:
     result = manager.detect_risk(page, status)
-    if not result.success:
-        raise XhsPausedError(result.code or "TEMPORARY_FAILURE")
+    if result.success:
+        return
+    if result.should_pause:
+        raise XhsPausedError(result.code or "XHS_RISK_CONTROL")
+    raise XhsContractError("browser risk state could not be determined")
 
 
 def _reply_failure(code: str, message: str) -> ReplyOutcome:

@@ -542,6 +542,20 @@ def test_fetch_mentions_pauses_on_login_page_without_dom_fallback(
     assert fake_page.listeners == []
 
 
+def test_fetch_mentions_treats_non_pause_browser_failure_as_contract_error(
+    gateway: XhsGateway, manager: FakeManager
+) -> None:
+    manager.risk_results[200] = OperationResult(
+        success=False,
+        code="TEMPORARY_FAILURE",
+        message="DOM was temporarily unavailable",
+        should_pause=False,
+    )
+
+    with pytest.raises(XhsContractError, match="risk state"):
+        gateway.fetch_mentions()
+
+
 def test_fetch_note_unwraps_vue_state_and_extracts_fields(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:

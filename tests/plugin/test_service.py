@@ -659,6 +659,27 @@ def test_three_consecutive_contract_failures_pause_but_success_resets_count(
     assert len(notifications) == 1
 
 
+def test_temporary_reply_failure_does_not_pause_polling(tmp_path: Path) -> None:
+    service, repository, xhs, _, moviepilot, _ = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+        replies_enabled=True,
+    )
+    xhs.mentions = [mention()]
+    xhs.reply_outcomes = [
+        ReplyOutcome(success=False, code="TEMPORARY_FAILURE")
+    ]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+
+    service.poll_once()
+
+    stored = repository.recent(1)[0]
+    assert stored.reply_status is ReplyStatus.FAILED
+    assert repository.get_runtime_state().browser_state is BrowserState.READY
+
+
 def test_reprocess_requeues_failed_request_without_persisting_token(tmp_path: Path) -> None:
     service, repository, xhs, resolver, _, _ = build_service(tmp_path / "assistant.db")
     xhs.mentions = [mention()]
