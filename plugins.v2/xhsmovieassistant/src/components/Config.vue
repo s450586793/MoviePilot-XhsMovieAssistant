@@ -138,5 +138,6 @@ watch(
 
 .xhs-movie-config :deep(.v-btn) {
   min-height: 44px;
+  min-width: 44px;
 }
 </style>

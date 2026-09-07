@@ -37,7 +37,7 @@ function draftFor(row) {
     drafts[row.id] = {
       title: normalizeText(row.title),
       original_title: normalizeText(row.original_title),
-      media_type: ['movie', 'tv'].includes(row.media_type) ? row.media_type : 'movie',
+      media_type: normalizeText(row.media_type),
       year: normalizeText(row.year),
       season: normalizeText(row.season),
     }
@@ -58,6 +58,29 @@ function isActionable(row) {
 
 function showFeedback(type, text) {
   feedback.value = { type, text }
+}
+
+function actionFeedback(data, label) {
+  const status = String(data?.status || '')
+  const detail = String(data?.message || '').trim()
+  const withDetail = fallback => detail ? `：${detail}` : fallback
+
+  if (status === 'FAILED') {
+    return { type: 'error', text: `${label}失败${withDetail('。')}` }
+  }
+  if (status === 'NEED_CONFIRMATION') {
+    return { type: 'warning', text: `${label}仍需确认${withDetail('。')}` }
+  }
+  if (status === 'SUBSCRIBED') {
+    return { type: 'success', text: `${label}完成${withDetail('：已创建订阅')}` }
+  }
+  if (status === 'ALREADY_SUBSCRIBED' || status === 'ALREADY_IN_LIBRARY') {
+    return { type: 'info', text: `${label}已存在，无需重复订阅${detail ? `：${detail}` : '。'}` }
+  }
+  if (status === 'DRY_RUN_MATCHED') {
+    return { type: 'info', text: `${label}已完成 dry-run 匹配${withDetail('。')}` }
+  }
+  return { type: 'success', text: detail || `${label}已提交。` }
 }
 
 async function loadState() {
@@ -89,7 +112,8 @@ async function runAction(path, label, body) {
       ? await props.api.post(path)
       : await props.api.post(path, body)
     const data = unwrap(response)
-    showFeedback('success', data?.message || `${label}已提交。`)
+    const outcome = actionFeedback(data, label)
+    showFeedback(outcome.type, outcome.text)
     await loadState()
   } catch (error) {
     showFeedback('error', message(error, `${label}失败，请检查当前状态后重试。`))
@@ -301,8 +325,12 @@ dd { font-size: 14px; margin: 3px 0 0; overflow-wrap: anywhere; }
   margin-top: 12px;
 }
 
+.xhs-movie-page__header :deep(.v-btn),
 .xhs-movie-page__tool-grid :deep(.v-btn),
-.xhs-movie-request__actions :deep(.v-btn) { min-height: 44px; }
+.xhs-movie-request__actions :deep(.v-btn) {
+  min-height: 44px;
+  min-width: 44px;
+}
 
 .xhs-movie-page__empty { color: var(--xhs-muted); font-size: 16px; margin: 16px 0; }
 

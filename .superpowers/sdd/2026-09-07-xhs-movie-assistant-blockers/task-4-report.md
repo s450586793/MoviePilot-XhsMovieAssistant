@@ -65,7 +65,7 @@ vite v5.4.21 ... 14 modules transformed ... built in 1.76s
 
 The final bounded v2.15.6 compatibility smoke checks marketplace metadata (`system_version >=2.15.6`), the Vue render mode, package dependencies, and the tracked federation exposes. It does not claim that the real runtime chain passed.
 
-`npm test --if-present` was also run. This package intentionally has no separate JavaScript test script: the deterministic source/build frontend contract is exercised by `tests/plugin/test_package.py`.
+本轮已补充 `npm test` 脚本及 Vitest 交互测试；前端行为由真实 Vue/jsdom 测试与 `tests/plugin/test_package.py` 的源码/构建产物契约共同覆盖。
 
 Additional checks passed with no output:
 
@@ -84,3 +84,50 @@ The secret scan found no matches. The build-only `plugins.v2/xhsmovieassistant/n
 - The source/build contract verifies `props.api`, edited draft values in the manual body, client-side empty-title/type rejection, refresh after an action, full Config key coverage, and no credentials/query tokens in generated assets.
 - Backend `_manual_resolution()` remains unmodified and authoritative for strict validation; sender authorization, deterministic matching, duplicate checks, and dry-run/real subscription gates remain in the existing service path.
 - Residual limitation: there is no live MoviePilot v2.15.6 host or external service exercise in this task, by design and task constraint.
+
+## Fix Round 1: Manual Resolution Feedback And Touch Targets
+
+### RED
+
+在修改 `Page.vue` 与 `Config.vue` 前，新增的真实前端测试暴露了以下回归：
+
+```text
+npm test
+Page.spec.js: 8 tests, 6 failed
+Config.spec.js: 1 touch target failed
+```
+
+失败覆盖未知影视类型被隐式提交为 `movie`、`FAILED` 和 `NEED_CONFIRMATION` 被按成功展示、成功订阅和重复结果无差异反馈，以及按钮最小宽度未达到 44 px。此前 package contract 也因缺少 `test` script 以 `KeyError: 'test'` 失败。
+
+### Changes
+
+- `draftFor()` 保留接口返回的未知类型，只有用户明确选择 `movie` 或 `tv` 才允许人工确认提交。
+- `actionFeedback()` 按业务状态展示 `FAILED`、`NEED_CONFIRMATION`、`SUBSCRIBED`、重复订阅/在库与 `DRY_RUN_MATCHED` 的不同提示；操作后仍刷新 `/state`。
+- `Page.vue` 与 `Config.vue` 的所有可交互按钮统一最小宽度和高度为 44 px。
+- 新增 Vitest、Vue Test Utils 与 jsdom；`vuetify-stubs.js` 只替换 Vuetify 展示层，页面状态、事件和请求体保持真实运行。
+- 新增 10 个前端交互测试，覆盖类型拒绝、编辑值精确提交、空标题拒绝、业务反馈/刷新、配置默认值和所有按钮的 jsdom 计算样式双维 44 px 断言。
+- package/build contract 现在验证测试依赖、`remoteEntry` 与唯一 expose chunk 的对应关系、关键编译分支、44 px CSS 及前端测试和 expose chunk 被 Git 跟踪。
+
+### GREEN
+
+```text
+npm test
+2 test files passed, 10 tests passed
+
+npm run build
+vite v5.4.21; 14 modules transformed; build succeeded
+
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_plugin.py tests/plugin/test_package.py
+66 passed
+
+.venv/bin/pytest -o addopts='' -q
+396 passed
+
+.venv/bin/pytest -o addopts='' -q --cov=xhsmovieassistant --cov-fail-under=80
+396 passed; coverage 89.05%
+
+.venv/bin/python -m compileall -q plugins.v2/xhsmovieassistant
+passed
+```
+
+对 `plugins.v2/xhsmovieassistant/dist` 和 `src` 的凭据模式扫描未发现匹配项。未执行真实 XHS、Chromium、MoviePilot、LLM、二维码或订阅链路，符合本任务限制。

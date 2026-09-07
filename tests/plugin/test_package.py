@@ -102,10 +102,27 @@ def test_repository_does_not_track_runtime_secrets() -> None:
 def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     plugin_root = ROOT / "plugins.v2" / "xhsmovieassistant"
     package = json.loads((plugin_root / "package.json").read_text(encoding="utf-8"))
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "plugins.v2/xhsmovieassistant/dist/assets"],
+        cwd=ROOT,
+        text=True,
+    ).splitlines()
+    remote_entry = (plugin_root / "dist" / "assets" / "remoteEntry.js").read_text(
+        encoding="utf-8"
+    )
 
     assert XhsMovieAssistant().get_render_mode() == ("vue", "dist/assets")
     assert package["scripts"]["build"] == "vite build"
-    assert {"vue", "vite", "@vitejs/plugin-vue", "@originjs/vite-plugin-federation"} <= (
+    assert package["scripts"]["test"] == "vitest run"
+    assert {
+        "vue",
+        "vite",
+        "@vitejs/plugin-vue",
+        "@originjs/vite-plugin-federation",
+        "vitest",
+        "@vue/test-utils",
+        "jsdom",
+    } <= (
         set(package["dependencies"]) | set(package["devDependencies"])
     )
     assert (plugin_root / "package-lock.json").is_file()
@@ -114,16 +131,49 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     assert (plugin_root / "src" / "components" / "Config.vue").is_file()
     assert (plugin_root / "src" / "components" / "Page.vue").is_file()
     assert (plugin_root / "dist" / "assets" / "remoteEntry.js").is_file()
-    assert list((plugin_root / "dist" / "assets").glob("__federation_expose_Config-*.js"))
-    assert list((plugin_root / "dist" / "assets").glob("__federation_expose_Page-*.js"))
+    config_assets = list((plugin_root / "dist" / "assets").glob("__federation_expose_Config-*.js"))
+    page_assets = list((plugin_root / "dist" / "assets").glob("__federation_expose_Page-*.js"))
+    assert len(config_assets) == 1
+    assert len(page_assets) == 1
+    assert remote_entry.count('"./Config"') == 1
+    assert remote_entry.count('"./Page"') == 1
+    assert f"./{config_assets[0].name}" in remote_entry
+    assert f"./{page_assets[0].name}" in remote_entry
+    config_asset = config_assets[0].read_text(encoding="utf-8")
+    page_asset = page_assets[0].read_text(encoding="utf-8")
+    assert "小红书影视助手配置" in config_asset
+    assert "notifications_enabled: true" in config_asset
+    assert "poll_interval_minutes: 2" in config_asset
+    assert "confidence_threshold: 0.85" in config_asset
+    assert "template_SUBSCRIBED" in config_asset
+    assert "template_FAILED" in config_asset
+    assert "小红书影视助手运行面板" in page_asset
+    assert "影视类型必须是电影或电视剧" in page_asset
+    assert "function actionFeedback" in page_asset
+    assert "status === 'FAILED'" in page_asset
+    assert "status === 'NEED_CONFIRMATION'" in page_asset
+    assert "min-width: 44px" in "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (plugin_root / "dist" / "assets").glob("*.css")
+    )
+    assert {
+        "plugins.v2/xhsmovieassistant/src/components/Page.spec.js",
+        "plugins.v2/xhsmovieassistant/src/components/Config.spec.js",
+    } <= set(
+        subprocess.check_output(
+            ["git", "ls-files", "plugins.v2/xhsmovieassistant/src/components"],
+            cwd=ROOT,
+            text=True,
+        ).splitlines()
+    )
+    assert {str(path.relative_to(ROOT)) for path in config_assets + page_assets} <= set(
+        tracked
+    )
 
 
 def test_vue_page_uses_host_api_and_edited_manual_values_without_secrets() -> None:
     plugin_root = ROOT / "plugins.v2" / "xhsmovieassistant"
     page = (plugin_root / "src" / "components" / "Page.vue").read_text(
-        encoding="utf-8"
-    )
-    config = (plugin_root / "src" / "components" / "Config.vue").read_text(
         encoding="utf-8"
     )
     built_assets = "\n".join(
@@ -146,26 +196,6 @@ def test_vue_page_uses_host_api_and_edited_manual_values_without_secrets() -> No
     assert "fetch(" not in page
     assert "authorization" not in page.casefold()
     assert "token" not in page.casefold()
-    for field in (
-        "enabled",
-        "enable_subscription",
-        "notifications_enabled",
-        "reply_enabled",
-        "reply_success_enabled",
-        "reply_existing_enabled",
-        "reply_confirmation_enabled",
-        "reply_failure_enabled",
-        "site",
-        "poll_interval_minutes",
-        "confidence_threshold",
-        "authorized_user_ids",
-        "template_SUBSCRIBED",
-        "template_ALREADY_SUBSCRIBED",
-        "template_ALREADY_IN_LIBRARY",
-        "template_NEED_CONFIRMATION",
-        "template_FAILED",
-    ):
-        assert field in config
     assert "api_key" not in built_assets.casefold()
     assert "xsec_token" not in built_assets.casefold()
     assert "authorization" not in built_assets.casefold()
