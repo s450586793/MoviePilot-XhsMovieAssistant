@@ -15,9 +15,69 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _single_dist_asset(asset_dir: Path, pattern: str) -> Path:
-    matches = sorted(asset_dir.glob(pattern))
+    matches = sorted(asset_dir.rglob(pattern))
     assert len(matches) == 1, f"expected one {pattern} asset, found {matches}"
     return matches[0]
+
+
+def _dist_asset_relative_paths(asset_dir: Path) -> set[str]:
+    return {
+        path.relative_to(asset_dir).as_posix()
+        for path in asset_dir.rglob("*")
+        if path.is_file()
+    }
+
+
+def _tracked_dist_asset_relative_paths(asset_dir: Path) -> set[str]:
+    tracked_root = asset_dir.relative_to(ROOT)
+    tracked = subprocess.check_output(
+        ["git", "ls-files", tracked_root.as_posix()],
+        cwd=ROOT,
+        text=True,
+    ).splitlines()
+    return {
+        Path(path).relative_to(tracked_root).as_posix() for path in tracked
+    }
+
+
+def _assert_delivery_assets_are_complete_and_tracked(
+    delivery_assets: set[str], expected_assets: set[str], tracked_assets: set[str]
+) -> None:
+    assert delivery_assets == expected_assets, "dist/assets delivery files differ"
+    assert delivery_assets == tracked_assets, "dist/assets delivery files are not tracked"
+
+
+def _remote_entry_expose_block(remote_entry: str, expose: str) -> str:
+    module_map = re.search(
+        r"let moduleMap\s*=\s*\{(?P<entries>.*?)\};\s*const seen",
+        remote_entry,
+        re.DOTALL,
+    )
+    assert module_map, "remoteEntry moduleMap is missing"
+    expose_block = re.search(
+        rf'"{re.escape(expose)}"\s*:\s*\(\)\s*=>\s*\{{(?P<body>.*?)\}}(?=,|$)',
+        module_map.group("entries"),
+        re.DOTALL,
+    )
+    assert expose_block, f"remoteEntry {expose} expose is missing"
+    return expose_block.group("body")
+
+
+def _assert_remote_entry_expose_binding(
+    remote_entry: str, expose: str, javascript_asset: Path, css_asset: Path
+) -> None:
+    expose_block = _remote_entry_expose_block(remote_entry, expose)
+    css_references = re.findall(
+        r'dynamicLoadingCss\(\["(?P<asset>[^"]+)"\]', expose_block
+    )
+    javascript_references = re.findall(
+        r"__federation_import\('./(?P<asset>[^']+)'\)", expose_block
+    )
+
+    assert css_references == [css_asset.name], f"{expose} CSS mapping differs"
+    assert javascript_references == [javascript_asset.name], (
+        f"{expose} JavaScript mapping differs"
+    )
 
 
 def _manual_draft_media_type_initializer(page_code: str) -> str:
@@ -147,14 +207,8 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     plugin_root = ROOT / "plugins.v2" / "xhsmovieassistant"
     asset_dir = plugin_root / "dist" / "assets"
     package = json.loads((plugin_root / "package.json").read_text(encoding="utf-8"))
-    tracked_assets = set(
-        subprocess.check_output(
-            ["git", "ls-files", "plugins.v2/xhsmovieassistant/dist/assets"],
-            cwd=ROOT,
-            text=True,
-        ).splitlines()
-    )
-    delivery_assets = {path for path in asset_dir.iterdir() if path.is_file()}
+    tracked_assets = _tracked_dist_asset_relative_paths(asset_dir)
+    delivery_assets = _dist_asset_relative_paths(asset_dir)
     remote_entry_asset = asset_dir / "remoteEntry.js"
     config_asset = _single_dist_asset(
         asset_dir, "__federation_expose_Config-*.js"
@@ -174,14 +228,17 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
         asset_dir, "_plugin-vue_export-helper-*.js"
     )
     expected_delivery_assets = {
-        remote_entry_asset,
-        config_asset,
-        config_css_asset,
-        page_asset,
-        page_css_asset,
-        entry_asset,
-        federation_import_asset,
-        vue_export_helper_asset,
+        path.relative_to(asset_dir).as_posix()
+        for path in (
+            remote_entry_asset,
+            config_asset,
+            config_css_asset,
+            page_asset,
+            page_css_asset,
+            entry_asset,
+            federation_import_asset,
+            vue_export_helper_asset,
+        )
     }
     remote_entry = remote_entry_asset.read_text(encoding="utf-8")
 
@@ -204,14 +261,17 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     assert (plugin_root / "src" / "main.js").is_file()
     assert (plugin_root / "src" / "components" / "Config.vue").is_file()
     assert (plugin_root / "src" / "components" / "Page.vue").is_file()
-    assert delivery_assets == expected_delivery_assets
-    assert {str(path.relative_to(ROOT)) for path in delivery_assets} == tracked_assets
+    _assert_delivery_assets_are_complete_and_tracked(
+        delivery_assets, expected_delivery_assets, tracked_assets
+    )
     assert remote_entry.count('"./Config"') == 1
     assert remote_entry.count('"./Page"') == 1
-    assert f'dynamicLoadingCss(["{config_css_asset.name}"]' in remote_entry
-    assert f"__federation_import('./{config_asset.name}')" in remote_entry
-    assert f'dynamicLoadingCss(["{page_css_asset.name}"]' in remote_entry
-    assert f"__federation_import('./{page_asset.name}')" in remote_entry
+    _assert_remote_entry_expose_binding(
+        remote_entry, "./Config", config_asset, config_css_asset
+    )
+    _assert_remote_entry_expose_binding(
+        remote_entry, "./Page", page_asset, page_css_asset
+    )
     config_code = config_asset.read_text(encoding="utf-8")
     page_code = page_asset.read_text(encoding="utf-8")
     assert "小红书影视助手配置" in config_code
@@ -241,6 +301,58 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     )
 
 
+def test_vue_federation_delivery_rejects_nested_untracked_asset(tmp_path) -> None:
+    asset_dir = tmp_path / "assets"
+    stale_asset = asset_dir / "stale" / "old-page.js"
+    stale_asset.parent.mkdir(parents=True)
+    (asset_dir / "remoteEntry.js").write_text("", encoding="utf-8")
+    stale_asset.write_text("", encoding="utf-8")
+    expected_assets = {"remoteEntry.js"}
+    delivery_assets = _dist_asset_relative_paths(asset_dir)
+
+    assert delivery_assets == {"remoteEntry.js", "stale/old-page.js"}
+
+    with pytest.raises(AssertionError, match="delivery files differ"):
+        _assert_delivery_assets_are_complete_and_tracked(
+            delivery_assets, expected_assets, expected_assets
+        )
+
+
+def test_vue_remote_entry_rejects_wrong_config_asset_mapping() -> None:
+    asset_dir = ROOT / "plugins.v2" / "xhsmovieassistant" / "dist" / "assets"
+    remote_entry = (asset_dir / "remoteEntry.js").read_text(encoding="utf-8")
+    config_asset = _single_dist_asset(
+        asset_dir, "__federation_expose_Config-*.js"
+    )
+    config_css_asset = _single_dist_asset(
+        asset_dir, "__federation_expose_Config-*.css"
+    )
+    page_asset = _single_dist_asset(asset_dir, "__federation_expose_Page-*.js")
+    page_css_asset = _single_dist_asset(
+        asset_dir, "__federation_expose_Page-*.css"
+    )
+
+    wrong_css_remote_entry = remote_entry.replace(
+        config_css_asset.name, page_css_asset.name, 1
+    )
+    assert wrong_css_remote_entry != remote_entry
+    with pytest.raises(AssertionError, match=r"\./Config CSS mapping differs"):
+        _assert_remote_entry_expose_binding(
+            wrong_css_remote_entry, "./Config", config_asset, config_css_asset
+        )
+
+    wrong_javascript_remote_entry = remote_entry.replace(
+        config_asset.name, page_asset.name, 1
+    )
+    assert wrong_javascript_remote_entry != remote_entry
+    with pytest.raises(
+        AssertionError, match=r"\./Config JavaScript mapping differs"
+    ):
+        _assert_remote_entry_expose_binding(
+            wrong_javascript_remote_entry, "./Config", config_asset, config_css_asset
+        )
+
+
 def test_vue_page_uses_host_api_and_edited_manual_values_without_secrets() -> None:
     plugin_root = ROOT / "plugins.v2" / "xhsmovieassistant"
     page = (plugin_root / "src" / "components" / "Page.vue").read_text(
@@ -248,7 +360,7 @@ def test_vue_page_uses_host_api_and_edited_manual_values_without_secrets() -> No
     )
     built_assets = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (plugin_root / "dist" / "assets").glob("*")
+        for path in (plugin_root / "dist" / "assets").rglob("*")
         if path.is_file()
     )
 

@@ -164,3 +164,39 @@ vite v5.4.21; 14 modules transformed; build succeeded
 ```
 
 构建后的 chunk 名称和内容与已提交交付物保持一致，唯一的本轮代码改动是 package contract 本身。残余限制不变：未运行真实 MoviePilot host 或外部服务链路。
+
+## Fix Round 3: Recursive Delivery And Structural Expose Binding
+
+### Finding And Changes
+
+上一轮资产集合只遍历 `dist/assets` 第一层，且 `remoteEntry` 只做全局字符串搜索；嵌套残留文件和 Config/Page 错绑都有假绿空间。本轮仍只修改 `tests/plugin/test_package.py`，未修改 Vue 源码或交付产物。
+
+- 资产收集和凭据扫描统一使用 `rglob("*")`，仅收集文件，并以相对 `as_posix()` 路径比较磁盘交付集合、预期集合和 `git ls-files` 集合。
+- `remoteEntry` 现在先限定解析 `moduleMap`，再分别提取 `"./Config"`、`"./Page"` 的 expose body；每个 body 的 CSS 与 JavaScript 引用必须各恰好一个，且分别等于对应 expose 的已跟踪资产。
+- 临时目录测试实际写入 `stale/old-page.js`，证明递归收集到嵌套文件，并因不在预期/跟踪集合中失败。
+- 合成 remoteEntry 分别将 Config CSS 和 JavaScript 替换为 Page 资产；两个样本都必须触发 Config 的结构化绑定断言，防止交换或错绑映射假绿。
+
+### Verification
+
+```text
+npm test
+2 test files passed, 10 tests passed
+
+npm run build
+vite v5.4.21; 14 modules transformed; build succeeded
+
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_package.py \
+  -k vue_federation_package_and_tracked_build_are_installable
+1 passed, 9 deselected
+
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_package.py
+10 passed
+
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_plugin.py tests/plugin/test_package.py
+69 passed
+
+.venv/bin/pytest -o addopts='' -q
+399 passed
+```
+
+重建后 assets 的内容与提交基线一致；本轮的未跟踪构建依赖会在提交前删除。残余限制不变：未运行真实 MoviePilot host 或外部服务链路。
