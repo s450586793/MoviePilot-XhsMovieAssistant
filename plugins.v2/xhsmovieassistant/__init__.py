@@ -732,10 +732,10 @@ class XhsMovieAssistant(_PluginBase):
             stop_event = self._stop_event
 
             def run() -> None:
-                if activity == "poll" and stop_event.is_set():
-                    return
-                self._cached_status["activity"] = activity.upper()
                 try:
+                    if activity == "poll" and stop_event.is_set():
+                        return
+                    self._cached_status["activity"] = activity.upper()
                     outcome = operation()
                     if (
                         generation == self._generation

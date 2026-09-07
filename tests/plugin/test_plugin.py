@@ -368,6 +368,33 @@ def test_poll_once_is_non_blocking_and_rejects_reentry(tmp_path):
     plugin._worker.join(timeout=0.5)
 
 
+def test_poll_worker_stopped_at_entry_releases_activity_lock(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    calls = []
+
+    class _StopAtEntryThread:
+        def __init__(self, *, target, **kwargs):
+            self._target = target
+            self.started = False
+
+        def start(self):
+            self.started = True
+            plugin._stop_event.set()
+            self._target()
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(entrypoint.threading, "Thread", _StopAtEntryThread)
+
+    assert plugin._start_worker("poll", lambda: calls.append("poll")) is True
+    assert plugin._worker.started is True
+    assert plugin._worker.is_alive() is False
+    assert calls == []
+    assert plugin._activity_lock.acquire(blocking=False) is True
+    plugin._activity_lock.release()
+
+
 def test_management_action_does_not_overlap_active_poll(tmp_path):
     plugin = _plugin(tmp_path)
     entered = threading.Event()
