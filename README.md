@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.1.3-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.1.4-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.1.3` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.1.4` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -188,7 +188,7 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.1.3` 发布验证结果为：Python `424 passed`、覆盖率 `88.93%`、Vue/Vitest
+当前 `v0.1.4` 发布验证结果为：Python `425 passed`、覆盖率 `88.90%`、Vue/Vitest
 `14 passed`、MoviePilot `v2.15.6` 隔离 import/route smoke 通过。该 smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 

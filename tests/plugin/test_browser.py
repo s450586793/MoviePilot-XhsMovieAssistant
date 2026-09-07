@@ -729,6 +729,27 @@ def test_check_login_prefers_initial_state(manager, fake_playwright) -> None:
     assert fake_playwright.page.goto_args[0] == ("https://www.xiaohongshu.com",)
 
 
+def test_check_login_accepts_visible_profile_link_when_rednote_state_is_absent(
+    tmp_path, fake_playwright
+) -> None:
+    fake_playwright.page.url = "https://www.rednote.com"
+    fake_playwright.page.initial_logged_in = None
+    fake_playwright.page.visible_selectors.add(
+        'a[title="我"][href^="/user/profile/"]'
+    )
+    browser = BrowserManager(
+        tmp_path,
+        site="rednote",
+        proxy=None,
+        playwright_factory=lambda: fake_playwright,
+    )
+
+    result = browser.check_login()
+
+    assert result.success is True
+    assert fake_playwright.page.goto_args[0] == ("https://www.rednote.com",)
+
+
 @pytest.mark.parametrize("state", [False, None])
 def test_check_login_uses_dom_fallback_for_logged_out_page(
     manager, fake_playwright, state

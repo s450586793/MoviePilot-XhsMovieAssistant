@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.1.4": "兼容 RedNote 新版页面的已登录状态识别。",
         "v0.1.3": "新增 CloakBrowser/CDP 模式，并正确暂停小红书安全限制页。",
         "v0.1.2": "Chromium 下载复用 MoviePilot 代理配置，避免直连超时。",
         "v0.1.1": "兼容 MoviePilot 已安装的 Playwright 1.x，避免共享依赖冲突。",

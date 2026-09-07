@@ -25,6 +25,9 @@ _QR_SELECTOR = (
     "[class*='qrcode'] img:visible"
 )
 _LOGIN_SELECTOR = ".login-btn:visible, .login-container:visible"
+_AUTHENTICATED_PROFILE_SELECTOR = (
+    'a[title="我"][href^="/user/profile/"]:visible'
+)
 _INSTALL_TIMEOUT_SECONDS = 600
 _MAX_RESULT_MESSAGE = 8192
 _PROFILE_LOCK = threading.Lock()
@@ -281,6 +284,14 @@ class BrowserManager:
                     message="Login is required",
                     should_pause=True,
                 )
+            try:
+                profile_visible = page.locator(
+                    _AUTHENTICATED_PROFILE_SELECTOR
+                ).first.is_visible(timeout=3_000)
+            except Exception:
+                profile_visible = False
+            if profile_visible:
+                return OperationResult(success=True)
             login = self.detect_login_page(page)
             if not login.success:
                 return login
