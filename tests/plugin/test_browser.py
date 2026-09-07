@@ -64,6 +64,7 @@ class FakeResponse:
 
 class FakePage:
     def __init__(self):
+        self.url = "https://www.xiaohongshu.com"
         self.initial_logged_in = None
         self.visible_selectors: set[str] = set()
         self.present_selectors: set[str] = set()
@@ -792,6 +793,16 @@ def test_detect_risk_returns_stable_pause_code(manager, fake_playwright, text, c
 
     assert risk.success is False
     assert risk.code == code
+    assert risk.should_pause is True
+
+
+def test_detect_risk_pauses_on_xhs_security_limit_url(manager, fake_playwright) -> None:
+    fake_playwright.page.url = "https://www.xiaohongshu.com/website-login/error"
+
+    risk = manager.detect_risk(fake_playwright.page)
+
+    assert risk.success is False
+    assert risk.code == "XHS_RISK_CONTROL"
     assert risk.should_pause is True
 
 

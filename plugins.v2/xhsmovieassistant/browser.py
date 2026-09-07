@@ -269,6 +269,11 @@ class BrowserManager:
             return _pause_result("RATE_LIMITED", "Request rate was limited")
         if response_status == 403:
             return _pause_result("AUTH_REQUIRED", "Access was forbidden")
+        page_path = urlsplit(str(getattr(page, "url", "") or "")).path.casefold()
+        if page_path.rstrip("/") == "/website-login/error":
+            return _pause_result(
+                "XHS_RISK_CONTROL", "Risk control verification is required"
+            )
         try:
             text = str(page.locator("body").inner_text(timeout=3_000) or "")
         except Exception:
