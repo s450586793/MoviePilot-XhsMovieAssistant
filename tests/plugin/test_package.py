@@ -6,10 +6,54 @@ import struct
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from xhsmovieassistant import XhsMovieAssistant
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _single_dist_asset(asset_dir: Path, pattern: str) -> Path:
+    matches = sorted(asset_dir.glob(pattern))
+    assert len(matches) == 1, f"expected one {pattern} asset, found {matches}"
+    return matches[0]
+
+
+def _manual_draft_media_type_initializer(page_code: str) -> str:
+    match = re.search(
+        r"media_type:\s*(?P<initializer>.+?),\s*\n\s*year:\s*",
+        page_code,
+    )
+    assert match, "manual draft media_type initializer is missing"
+    return re.sub(r"\s+", "", match.group("initializer"))
+
+
+def _normalize_text_return_expression(page_code: str) -> str:
+    match = re.search(
+        r"function normalizeText\(value\)\s*\{\s*return\s+(?P<expression>.+?);?\s*\}",
+        page_code,
+    )
+    assert match, "normalizeText return expression is missing"
+    return re.sub(r"\s+", "", match.group("expression"))
+
+
+def _assert_unknown_media_type_semantics_match(
+    page_source: str, page_asset: str
+) -> None:
+    source_initializer = _manual_draft_media_type_initializer(page_source)
+    asset_initializer = _manual_draft_media_type_initializer(page_asset)
+    source_normalizer = _normalize_text_return_expression(page_source)
+    asset_normalizer = _normalize_text_return_expression(page_asset)
+
+    assert source_initializer == "normalizeText(row.media_type)"
+    assert asset_initializer == source_initializer, (
+        "built Page chunk does not preserve source manual draft media type semantics"
+    )
+    assert source_normalizer == "value==='-'||value==null?'':String(value)"
+    assert asset_normalizer == source_normalizer, (
+        "built Page chunk does not preserve source normalizeText semantics"
+    )
 
 
 def test_market_metadata_matches_plugin_class() -> None:
@@ -101,15 +145,45 @@ def test_repository_does_not_track_runtime_secrets() -> None:
 
 def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     plugin_root = ROOT / "plugins.v2" / "xhsmovieassistant"
+    asset_dir = plugin_root / "dist" / "assets"
     package = json.loads((plugin_root / "package.json").read_text(encoding="utf-8"))
-    tracked = subprocess.check_output(
-        ["git", "ls-files", "plugins.v2/xhsmovieassistant/dist/assets"],
-        cwd=ROOT,
-        text=True,
-    ).splitlines()
-    remote_entry = (plugin_root / "dist" / "assets" / "remoteEntry.js").read_text(
-        encoding="utf-8"
+    tracked_assets = set(
+        subprocess.check_output(
+            ["git", "ls-files", "plugins.v2/xhsmovieassistant/dist/assets"],
+            cwd=ROOT,
+            text=True,
+        ).splitlines()
     )
+    delivery_assets = {path for path in asset_dir.iterdir() if path.is_file()}
+    remote_entry_asset = asset_dir / "remoteEntry.js"
+    config_asset = _single_dist_asset(
+        asset_dir, "__federation_expose_Config-*.js"
+    )
+    config_css_asset = _single_dist_asset(
+        asset_dir, "__federation_expose_Config-*.css"
+    )
+    page_asset = _single_dist_asset(asset_dir, "__federation_expose_Page-*.js")
+    page_css_asset = _single_dist_asset(
+        asset_dir, "__federation_expose_Page-*.css"
+    )
+    entry_asset = _single_dist_asset(asset_dir, "index-*.js")
+    federation_import_asset = _single_dist_asset(
+        asset_dir, "__federation_fn_import-*.js"
+    )
+    vue_export_helper_asset = _single_dist_asset(
+        asset_dir, "_plugin-vue_export-helper-*.js"
+    )
+    expected_delivery_assets = {
+        remote_entry_asset,
+        config_asset,
+        config_css_asset,
+        page_asset,
+        page_css_asset,
+        entry_asset,
+        federation_import_asset,
+        vue_export_helper_asset,
+    }
+    remote_entry = remote_entry_asset.read_text(encoding="utf-8")
 
     assert XhsMovieAssistant().get_render_mode() == ("vue", "dist/assets")
     assert package["scripts"]["build"] == "vite build"
@@ -130,31 +204,30 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     assert (plugin_root / "src" / "main.js").is_file()
     assert (plugin_root / "src" / "components" / "Config.vue").is_file()
     assert (plugin_root / "src" / "components" / "Page.vue").is_file()
-    assert (plugin_root / "dist" / "assets" / "remoteEntry.js").is_file()
-    config_assets = list((plugin_root / "dist" / "assets").glob("__federation_expose_Config-*.js"))
-    page_assets = list((plugin_root / "dist" / "assets").glob("__federation_expose_Page-*.js"))
-    assert len(config_assets) == 1
-    assert len(page_assets) == 1
+    assert delivery_assets == expected_delivery_assets
+    assert {str(path.relative_to(ROOT)) for path in delivery_assets} == tracked_assets
     assert remote_entry.count('"./Config"') == 1
     assert remote_entry.count('"./Page"') == 1
-    assert f"./{config_assets[0].name}" in remote_entry
-    assert f"./{page_assets[0].name}" in remote_entry
-    config_asset = config_assets[0].read_text(encoding="utf-8")
-    page_asset = page_assets[0].read_text(encoding="utf-8")
-    assert "小红书影视助手配置" in config_asset
-    assert "notifications_enabled: true" in config_asset
-    assert "poll_interval_minutes: 2" in config_asset
-    assert "confidence_threshold: 0.85" in config_asset
-    assert "template_SUBSCRIBED" in config_asset
-    assert "template_FAILED" in config_asset
-    assert "小红书影视助手运行面板" in page_asset
-    assert "影视类型必须是电影或电视剧" in page_asset
-    assert "function actionFeedback" in page_asset
-    assert "status === 'FAILED'" in page_asset
-    assert "status === 'NEED_CONFIRMATION'" in page_asset
+    assert f'dynamicLoadingCss(["{config_css_asset.name}"]' in remote_entry
+    assert f"__federation_import('./{config_asset.name}')" in remote_entry
+    assert f'dynamicLoadingCss(["{page_css_asset.name}"]' in remote_entry
+    assert f"__federation_import('./{page_asset.name}')" in remote_entry
+    config_code = config_asset.read_text(encoding="utf-8")
+    page_code = page_asset.read_text(encoding="utf-8")
+    assert "小红书影视助手配置" in config_code
+    assert "notifications_enabled: true" in config_code
+    assert "poll_interval_minutes: 2" in config_code
+    assert "confidence_threshold: 0.85" in config_code
+    assert "template_SUBSCRIBED" in config_code
+    assert "template_FAILED" in config_code
+    assert "小红书影视助手运行面板" in page_code
+    assert "影视类型必须是电影或电视剧" in page_code
+    assert "function actionFeedback" in page_code
+    assert "status === 'FAILED'" in page_code
+    assert "status === 'NEED_CONFIRMATION'" in page_code
     assert "min-width: 44px" in "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (plugin_root / "dist" / "assets").glob("*.css")
+        for path in (config_css_asset, page_css_asset)
     )
     assert {
         "plugins.v2/xhsmovieassistant/src/components/Page.spec.js",
@@ -165,9 +238,6 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
             cwd=ROOT,
             text=True,
         ).splitlines()
-    )
-    assert {str(path.relative_to(ROOT)) for path in config_assets + page_assets} <= set(
-        tracked
     )
 
 
@@ -200,3 +270,24 @@ def test_vue_page_uses_host_api_and_edited_manual_values_without_secrets() -> No
     assert "xsec_token" not in built_assets.casefold()
     assert "authorization" not in built_assets.casefold()
     assert not re.search(r"[?&](?:token|apikey|api_key)=", built_assets, re.IGNORECASE)
+
+
+def test_vue_page_build_preserves_unknown_media_type_semantics() -> None:
+    plugin_root = ROOT / "plugins.v2" / "xhsmovieassistant"
+    page_source = (plugin_root / "src" / "components" / "Page.vue").read_text(
+        encoding="utf-8"
+    )
+    page_asset = _single_dist_asset(
+        plugin_root / "dist" / "assets", "__federation_expose_Page-*.js"
+    ).read_text(encoding="utf-8")
+
+    _assert_unknown_media_type_semantics_match(page_source, page_asset)
+
+    stale_page_asset = page_asset.replace(
+        "media_type: normalizeText(row.media_type),",
+        "media_type: ['movie', 'tv'].includes(row.media_type) ? row.media_type : 'movie',",
+        1,
+    )
+    assert stale_page_asset != page_asset
+    with pytest.raises(AssertionError, match="built Page chunk"):
+        _assert_unknown_media_type_semantics_match(page_source, stale_page_asset)

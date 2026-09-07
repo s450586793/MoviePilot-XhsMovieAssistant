@@ -131,3 +131,36 @@ passed
 ```
 
 对 `plugins.v2/xhsmovieassistant/dist` 和 `src` 的凭据模式扫描未发现匹配项。未执行真实 XHS、Chromium、MoviePilot、LLM、二维码或订阅链路，符合本任务限制。
+
+## Fix Round 2: Federation Delivery And Stale-Build Contract
+
+### Finding And Changes
+
+上一轮的 package contract 只跟踪两个 expose JavaScript chunk，且只检查通用错误文案；因此错误的旧 Page build 仍可能让该测试通过。本轮只修改 `tests/plugin/test_package.py`，未修改 Vue 源码或交付产物。
+
+- 交付资产被完整枚举为 `remoteEntry.js`、Config/Page 各一个 expose JavaScript 与 CSS、一个 `index` 入口、一个 federation import shared chunk 和一个 Vue export helper chunk。
+- 测试要求磁盘上的全部 `dist/assets` 文件集合与 `git ls-files` 的集合完全相等，因此任一未跟踪、缺失或额外的交付资产都会失败。
+- `remoteEntry.js` 的 `./Config`、`./Page` expose 必须各唯一一次，并分别指向已枚举且已跟踪的 JavaScript chunk 和 CSS 文件。
+- source/build 契约提取 `draftFor()` 中 `year` 前的 `media_type` 初始化表达式，并要求源码和 Page chunk 都是 `normalizeText(row.media_type)`；同时要求两侧 `normalizeText` 的返回表达式均为只将 `-`/空值转换为空字符串的实现。
+- 测试把当前 Page chunk 的初始化表达式确定性替换为旧的 `['movie', 'tv'].includes(...) ? ... : 'movie'` 分支，并断言 source/build contract 抛出错误。该合成 stale sample 不依赖服务、随机 hash 或真实历史工作树。
+
+### Verification
+
+```text
+npm test
+2 test files passed, 10 tests passed
+
+npm run build
+vite v5.4.21; 14 modules transformed; build succeeded
+
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_package.py
+8 passed
+
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_plugin.py tests/plugin/test_package.py
+67 passed
+
+.venv/bin/pytest -o addopts='' -q
+397 passed
+```
+
+构建后的 chunk 名称和内容与已提交交付物保持一致，唯一的本轮代码改动是 package contract 本身。残余限制不变：未运行真实 MoviePilot host 或外部服务链路。
