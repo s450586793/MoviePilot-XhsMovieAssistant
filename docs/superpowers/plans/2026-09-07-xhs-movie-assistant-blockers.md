@@ -87,6 +87,7 @@
 **Files:**
 - Modify: `plugins.v2/xhsmovieassistant/__init__.py`
 - Create: `plugins.v2/xhsmovieassistant/package.json`
+- Create: `plugins.v2/xhsmovieassistant/package-lock.json`
 - Create: `plugins.v2/xhsmovieassistant/vite.config.js`
 - Create: `plugins.v2/xhsmovieassistant/src/main.js`
 - Create: `plugins.v2/xhsmovieassistant/src/components/Config.vue`
@@ -98,14 +99,15 @@
 
 **Required behavior:**
 - Declare MoviePilot's supported Vue federation render mode and ship installable `dist/assets` output in the plugin package.
+- Add an authenticated read-only `GET /state` plugin route that returns only cached service/login status and durable recent-request rows; it must not start browser, LLM, MoviePilot chain, or notification work.
 - Preserve every existing configuration field/default, including dry-run and all four category reply switches.
-- The detail page still shows cached service/login state and recent request/match/error/reply results, and exposes the existing authenticated management/diagnostic operations.
+- The detail page loads `/state`, shows cached service/login state and recent request/match/error/reply results, and exposes the existing authenticated management/diagnostic operations.
 - For each actionable request, the user can edit title, optional original title, media type (`movie|tv`), optional year, and optional season before submitting `/requests/{id}/manual`.
 - The UI rejects an empty title or unknown media type before submission, shows actionable success/failure feedback, and refreshes the cached request list after an action.
 - The backend remains authoritative: `_manual_resolution()` strict validation, current sender authorization, deterministic MoviePilot matching, duplicate checks, and dry-run/real-subscription switch still apply.
-- No API key/token is embedded in generated assets or query strings; use the authenticated plugin API client supplied by MoviePilot's remote component host.
+- No API key/token is embedded in generated assets or query strings; use the authenticated generic `api` client supplied to Vue plugin components by the MoviePilot v2.15.6 host.
 
-- [ ] Add package/render-mode tests that fail until source and built federation assets exist and contain no tracked secrets.
+- [ ] Add package/render-mode and `/state` tests that fail until source and built federation assets exist, cached data is returned without external work, and tracked output contains no secrets.
 - [ ] Add focused frontend component tests or a deterministic build/source contract test proving user-edited values, not cached static params, form the manual POST body.
 - [ ] Verify RED before changing render mode or adding frontend production files.
 - [ ] Implement the smallest Vue Config/Page remote by following the official v2.15.6 federation pattern; build tracked `dist` assets.
