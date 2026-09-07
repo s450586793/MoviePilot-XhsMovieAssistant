@@ -29,6 +29,10 @@ class FakeLocator:
 
     def wait_for(self, **kwargs) -> None:
         self.page.wait_args = kwargs
+        for selector in self.selector.split(","):
+            candidate = selector.strip().removesuffix(":visible")
+            if candidate in self.page.delayed_visible_selectors:
+                self.page.visible_selectors.add(candidate)
         if not self.is_visible():
             raise TimeoutError("locator was not visible")
 
@@ -68,6 +72,7 @@ class FakePage:
         self.initial_logged_in = None
         self.visible_selectors: set[str] = set()
         self.present_selectors: set[str] = set()
+        self.delayed_visible_selectors: set[str] = set()
         self.text = ""
         self.body_error = None
         self.qr_png = b"\x89PNG\r\n\x1a\nqr"
@@ -729,12 +734,12 @@ def test_check_login_prefers_initial_state(manager, fake_playwright) -> None:
     assert fake_playwright.page.goto_args[0] == ("https://www.xiaohongshu.com",)
 
 
-def test_check_login_accepts_visible_profile_link_when_rednote_state_is_absent(
+def test_check_login_waits_for_profile_link_when_rednote_state_is_absent(
     tmp_path, fake_playwright
 ) -> None:
     fake_playwright.page.url = "https://www.rednote.com"
     fake_playwright.page.initial_logged_in = None
-    fake_playwright.page.visible_selectors.add(
+    fake_playwright.page.delayed_visible_selectors.add(
         'a[title="我"][href^="/user/profile/"]'
     )
     browser = BrowserManager(

@@ -285,11 +285,13 @@ class BrowserManager:
                     should_pause=True,
                 )
             try:
-                profile_visible = page.locator(
+                page.locator(
                     _AUTHENTICATED_PROFILE_SELECTOR
-                ).first.is_visible(timeout=3_000)
+                ).first.wait_for(state="visible", timeout=3_000)
             except Exception:
                 profile_visible = False
+            else:
+                profile_visible = True
             if profile_visible:
                 return OperationResult(success=True)
             login = self.detect_login_page(page)
