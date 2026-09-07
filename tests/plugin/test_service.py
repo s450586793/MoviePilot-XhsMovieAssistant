@@ -305,6 +305,59 @@ def test_recovered_request_is_retried_by_next_poll_after_restart(tmp_path: Path)
     assert recovered.attempt_count == 1
 
 
+def test_reprocess_resumes_recovered_new_request_from_durable_snapshot(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "assistant.db"
+    interrupted_at = datetime(2026, 9, 7, 11, 40, tzinfo=timezone.utc)
+    restarted_at = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+    repository = RequestRepository(database_path)
+    saved = repository.save_mention(
+        NewMention(
+            note_id="note-m1",
+            note_url="https://www.xiaohongshu.com/explore/note-m1",
+            mention_id="m1",
+            sender_user_id="authorized-user",
+            comment_id="comment-m1",
+            comment_text="想看",
+            created_at=interrupted_at,
+        )
+    )
+    repository.transition(
+        saved.request.id,
+        RequestStatus.FETCHED,
+        note=NoteContext(
+            id="note-m1",
+            url="https://www.xiaohongshu.com/explore/note-m1",
+            title="星际穿越",
+        ),
+        now=interrupted_at,
+    )
+    repository.transition(
+        saved.request.id,
+        RequestStatus.RESOLVING,
+        now=interrupted_at,
+    )
+    assert repository.recover_interrupted(now=restarted_at) == 1
+
+    service, restarted_repository, xhs, resolver, moviepilot, _ = build_service(
+        database_path
+    )
+
+    result = service.reprocess(saved.request.id)
+
+    recovered = restarted_repository.get(saved.request.id)
+    assert result.status is RequestStatus.DRY_RUN_MATCHED
+    assert recovered is not None
+    assert recovered.status is RequestStatus.DRY_RUN_MATCHED
+    assert recovered.attempt_count == 1
+    assert xhs.fetch_mentions_calls == 0
+    assert xhs.fetch_note_calls == 0
+    assert resolver.calls == 1
+    assert len(moviepilot.match_calls) == 1
+    assert len(moviepilot.submit_calls) == 1
+
+
 def test_subscribed_pipeline_commits_each_state_before_external_calls(
     tmp_path: Path,
 ) -> None:
