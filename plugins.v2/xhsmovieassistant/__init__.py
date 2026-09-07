@@ -148,6 +148,8 @@ class XhsMovieAssistant(_PluginBase):
         self._generation = 0
         self._cached_status: dict[str, Any] = {
             "browser": "UNKNOWN",
+            "chromium": "UNKNOWN",
+            "chromium_code": None,
             "login": "UNKNOWN",
             "qrcode": None,
             "activity": "IDLE",
@@ -769,13 +771,24 @@ class XhsMovieAssistant(_PluginBase):
                     if (
                         generation == self._generation
                         and isinstance(outcome, OperationResult)
+                        and activity == "chromium_install"
                     ):
-                        self._cached_status["browser"] = (
-                            BrowserState.READY.value if outcome.success else outcome.code or "ERROR"
+                        self._cached_status.update(
+                            chromium="AVAILABLE" if outcome.success else "UNAVAILABLE",
+                            chromium_code=(
+                                None
+                                if outcome.success
+                                else outcome.code or "BROWSER_UNAVAILABLE"
+                            ),
                         )
                 except Exception:
                     if generation == self._generation:
                         self._cached_status["activity"] = "FAILED"
+                        if activity == "chromium_install":
+                            self._cached_status.update(
+                                chromium="UNAVAILABLE",
+                                chromium_code="BROWSER_UNAVAILABLE",
+                            )
                 finally:
                     if (
                         generation == self._generation
@@ -963,6 +976,8 @@ class XhsMovieAssistant(_PluginBase):
 
     def _page_status(self) -> dict[str, Any]:
         status = dict(self._cached_status)
+        status.setdefault("chromium", "UNKNOWN")
+        status.setdefault("chromium_code", None)
         if self._repository is None:
             return status
         try:
@@ -976,10 +991,18 @@ class XhsMovieAssistant(_PluginBase):
     def _status_text(self, status: Mapping[str, Any]) -> str:
         state = "已启用" if self.get_state() else "未启用"
         browser = str(status.get("browser") or "UNKNOWN")
+        chromium = str(status.get("chromium") or "UNKNOWN")
+        chromium_code = str(status.get("chromium_code") or "")
         login = str(status.get("login") or "UNKNOWN")
         activity = str(status.get("activity") or "IDLE")
         pause = str(status.get("pause_code") or "")
-        details = f"{state} | Browser: {browser} | Login: {login} | Activity: {activity}"
+        chromium_text = f"Chromium: {chromium}"
+        if chromium_code:
+            chromium_text = f"{chromium_text} ({chromium_code})"
+        details = (
+            f"{state} | Browser: {browser} | {chromium_text} | "
+            f"Login: {login} | Activity: {activity}"
+        )
         return f"{details} | Pause: {pause}" if pause else details
 
     def _clear_runtime(self, *, keep_repository: bool) -> None:

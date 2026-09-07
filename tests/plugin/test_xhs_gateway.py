@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from xhsmovieassistant.browser import OperationResult
+from xhsmovieassistant.browser import BrowserManager, OperationResult
 from xhsmovieassistant.request_builder import build_media_request
 from xhsmovieassistant.xhs import (
     NoteDetail,
@@ -258,6 +258,13 @@ class FakeLocator:
     def is_enabled(self, **kwargs: object) -> bool:
         return self.page.submit_enabled
 
+    def is_visible(self, **kwargs: object) -> bool:
+        return any(
+            selector.strip().removesuffix(":visible")
+            in self.page.visible_selectors
+            for selector in self.selector.split(",")
+        )
+
 
 class FakePage:
     def __init__(self) -> None:
@@ -278,6 +285,7 @@ class FakePage:
         self.wait_for_function_timeout: int | None = None
         self.wait_for_function_arg: object = None
         self.body_text = ""
+        self.visible_selectors: set[str] = set()
         self.dom_text: dict[str, str] = {}
         self.dom_text_lists: dict[str, list[str]] = {}
         self.present_selectors: set[str] = {
@@ -401,6 +409,10 @@ class FakeManager:
             )
         return self.risk_results.get(response_status, OperationResult(success=True))
 
+    def detect_login_page(self, page: FakePage) -> OperationResult:
+        assert page is self.page
+        return OperationResult(success=True)
+
 
 @pytest.fixture
 def fake_page() -> FakePage:
@@ -414,6 +426,19 @@ def manager(fake_page: FakePage) -> FakeManager:
 
 @pytest.fixture
 def gateway(manager: FakeManager) -> XhsGateway:
+    return XhsGateway(manager, replies_enabled=True)
+
+
+def _gateway_with_real_page_classification(
+    tmp_path, monkeypatch, page: FakePage
+) -> XhsGateway:
+    manager = BrowserManager(tmp_path, "xiaohongshu", None, lambda: None)
+
+    @contextmanager
+    def session():
+        yield page
+
+    monkeypatch.setattr(manager, "session", session)
     return XhsGateway(manager, replies_enabled=True)
 
 
@@ -555,6 +580,20 @@ def test_fetch_mentions_pauses_on_login_page_without_dom_fallback(
         gateway.fetch_mentions()
 
     assert error.value.code == "SESSION_EXPIRED"
+    assert fake_page.listeners == []
+
+
+def test_fetch_mentions_uses_real_visible_login_classification(
+    tmp_path, monkeypatch, fake_page: FakePage
+) -> None:
+    fake_page.visible_selectors.add(".login-container")
+    fake_page.responses = [FakeResponse(MENTIONS_API_URL, payload=mention_payload())]
+    gateway = _gateway_with_real_page_classification(tmp_path, monkeypatch, fake_page)
+
+    with pytest.raises(XhsPausedError) as error:
+        gateway.fetch_mentions()
+
+    assert error.value.code == "LOGIN_REQUIRED"
     assert fake_page.listeners == []
 
 
@@ -754,6 +793,19 @@ def test_fetch_note_passes_navigation_status_to_risk_detection(
     assert manager.detected_statuses == [429]
 
 
+def test_fetch_note_uses_real_visible_login_classification(
+    tmp_path, monkeypatch, fake_page: FakePage
+) -> None:
+    fake_page.visible_selectors.add(".login-container")
+    gateway = _gateway_with_real_page_classification(tmp_path, monkeypatch, fake_page)
+
+    with pytest.raises(XhsPausedError) as error:
+        gateway.fetch_note(make_mention())
+
+    assert error.value.code == "LOGIN_REQUIRED"
+    assert fake_page.wait_for_function_timeout is None
+
+
 def test_fetch_note_uses_dom_only_for_content_fallback(
     gateway: XhsGateway, fake_page: FakePage
 ) -> None:
@@ -830,6 +882,19 @@ def test_reply_is_disabled_by_default_without_opening_browser(
         success=False, code="REPLIES_DISABLED", message="Comment replies are disabled"
     )
     assert manager.session_count == 0
+
+
+def test_reply_uses_real_visible_login_classification_without_submitting(
+    tmp_path, monkeypatch, fake_page: FakePage
+) -> None:
+    fake_page.visible_selectors.add(".login-container")
+    gateway = _gateway_with_real_page_classification(tmp_path, monkeypatch, fake_page)
+
+    outcome = gateway.reply_to_comment(make_mention(), "固定模板回复")
+
+    assert outcome.success is False
+    assert outcome.code == "LOGIN_REQUIRED"
+    assert fake_page.submit_clicks == 0
 
 
 def test_reply_fails_after_ten_bounded_scrolls_when_exact_comment_is_missing(

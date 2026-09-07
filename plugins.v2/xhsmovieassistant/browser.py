@@ -225,22 +225,16 @@ class BrowserManager:
                 logged_in = None
             if logged_in is True:
                 return OperationResult(success=True)
-            try:
-                login_locator = page.locator(_LOGIN_SELECTOR)
-                login_visible = login_locator.first.is_visible(timeout=3_000)
-            except Exception:
-                return OperationResult(
-                    success=False,
-                    code="TEMPORARY_FAILURE",
-                    message="Login status could not be determined",
-                )
-            if logged_in is False or login_visible:
+            if logged_in is False:
                 return OperationResult(
                     success=False,
                     code="LOGIN_REQUIRED",
                     message="Login is required",
                     should_pause=True,
                 )
+            login = self.detect_login_page(page)
+            if not login.success:
+                return login
             return OperationResult(
                 success=False,
                 code="TEMPORARY_FAILURE",
@@ -266,7 +260,7 @@ class BrowserManager:
     def detect_risk(
         self, page: Any, response_status: int | None = None
     ) -> OperationResult:
-        """Classify login and anti-abuse pages into stable persistence-safe codes."""
+        """Classify anti-abuse pages into stable persistence-safe codes."""
         if response_status == 429:
             return _pause_result("RATE_LIMITED", "Request rate was limited")
         if response_status == 403:
@@ -292,7 +286,6 @@ class BrowserManager:
             "访问存在异常",
             "人机验证",
             "请完成验证",
-            "验证码",
             "captcha",
             "security verification",
         )
@@ -301,6 +294,20 @@ class BrowserManager:
         )
         if structured_risk_code or any(marker in normalized for marker in risk_markers):
             return _pause_result("XHS_RISK_CONTROL", "Risk control verification is required")
+        return OperationResult(success=True)
+
+    def detect_login_page(self, page: Any) -> OperationResult:
+        """Classify a visible login surface without relying on page copy."""
+        try:
+            login_visible = page.locator(_LOGIN_SELECTOR).first.is_visible(timeout=3_000)
+        except Exception:
+            return OperationResult(
+                success=False,
+                code="TEMPORARY_FAILURE",
+                message="Login status could not be determined",
+            )
+        if login_visible:
+            return _pause_result("LOGIN_REQUIRED", "Login is required")
         return OperationResult(success=True)
 
 

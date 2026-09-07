@@ -230,6 +230,7 @@ def test_state_endpoint_returns_cached_status_and_durable_rows_without_runtime_w
     plugin._browser = SimpleNamespace(
         check_login=lambda: (_ for _ in ()).throw(AssertionError("browser work")),
         install_chromium=lambda: (_ for _ in ()).throw(AssertionError("browser work")),
+        chromium_status=lambda: (_ for _ in ()).throw(AssertionError("browser work")),
     )
     plugin._resolver = SimpleNamespace(
         resolve=lambda value: (_ for _ in ()).throw(AssertionError("LLM work")),
@@ -256,6 +257,8 @@ def test_state_endpoint_returns_cached_status_and_durable_rows_without_runtime_w
             "login": "LOGGED_IN",
             "qrcode": None,
             "activity": "IDLE",
+            "chromium": "UNKNOWN",
+            "chromium_code": None,
             "pause_code": None,
         },
         "requests": [
@@ -275,6 +278,86 @@ def test_state_endpoint_returns_cached_status_and_durable_rows_without_runtime_w
             }
         ],
     }
+
+
+def test_state_preserves_completed_chromium_failure_with_durable_ready(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._repository = _RuntimeRepository()
+    plugin._browser = SimpleNamespace(
+        install_chromium=lambda: entrypoint.OperationResult(
+            success=False,
+            code="BROWSER_UNAVAILABLE",
+            message="private install details",
+        )
+    )
+
+    started = plugin.install_chromium(apikey="test-api-token")
+    plugin._worker.join(timeout=0.5)
+    response = _moviepilot_route_client(plugin, "/state").get(
+        "/state", headers={"Authorization": "Bearer browser-jwt"}
+    )
+
+    assert started.success is True
+    status = response.json()["data"]["status"]
+    assert status["browser"] == "READY"
+    assert status["chromium"] == "UNAVAILABLE"
+    assert status["chromium_code"] == "BROWSER_UNAVAILABLE"
+    assert "private install details" not in repr(status)
+    fallback_text = plugin.get_page()[0]["props"]["text"]
+    assert "Browser: READY" in fallback_text
+    assert "Chromium: UNAVAILABLE (BROWSER_UNAVAILABLE)" in fallback_text
+
+
+def test_state_replaces_prior_chromium_failure_after_completed_success(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._repository = _RuntimeRepository()
+    outcomes = iter(
+        (
+            entrypoint.OperationResult(success=False, code="BROWSER_UNAVAILABLE"),
+            entrypoint.OperationResult(success=True),
+        )
+    )
+    plugin._browser = SimpleNamespace(install_chromium=lambda: next(outcomes))
+
+    assert plugin.install_chromium(apikey="test-api-token").success is True
+    plugin._worker.join(timeout=0.5)
+    assert plugin.install_chromium(apikey="test-api-token").success is True
+    plugin._worker.join(timeout=0.5)
+    response = _moviepilot_route_client(plugin, "/state").get(
+        "/state", headers={"Authorization": "Bearer browser-jwt"}
+    )
+
+    status = response.json()["data"]["status"]
+    assert status["browser"] == "READY"
+    assert status["chromium"] == "AVAILABLE"
+    assert status["chromium_code"] is None
+
+
+def test_state_keeps_chromium_failure_alongside_durable_pause(tmp_path):
+    plugin = _plugin(tmp_path)
+    repository = _RuntimeRepository()
+    repository.state = SimpleNamespace(
+        browser_state=entrypoint.BrowserState.PAUSED,
+        pause_code="SESSION_EXPIRED",
+    )
+    plugin._repository = repository
+    plugin._browser = SimpleNamespace(
+        install_chromium=lambda: entrypoint.OperationResult(
+            success=False, code="BROWSER_UNAVAILABLE"
+        )
+    )
+
+    assert plugin.install_chromium(apikey="test-api-token").success is True
+    plugin._worker.join(timeout=0.5)
+    response = _moviepilot_route_client(plugin, "/state").get(
+        "/state", headers={"Authorization": "Bearer browser-jwt"}
+    )
+
+    status = response.json()["data"]["status"]
+    assert status["browser"] == "PAUSED"
+    assert status["pause_code"] == "SESSION_EXPIRED"
+    assert status["chromium"] == "UNAVAILABLE"
+    assert status["chromium_code"] == "BROWSER_UNAVAILABLE"
 
 
 def test_moviepilot_browser_jwt_reaches_bearer_authenticated_endpoint(tmp_path):

@@ -44,6 +44,11 @@ class _DomainModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, strict=True)
 
 
+def _validate_media_season(media_type: str, season: int | None) -> None:
+    if media_type == "movie" and season is not None:
+        raise ValueError("movie media cannot include a season")
+
+
 class NoteContext(_DomainModel):
     """Sanitized note data available to media resolution."""
 
@@ -84,6 +89,7 @@ class Resolution(_DomainModel):
             not self.title or self.media_type not in {"movie", "tv"}
         ):
             raise ValueError("resolved status requires a title and movie or tv media type")
+        _validate_media_season(self.media_type, self.season)
         return self
 
 
@@ -99,6 +105,11 @@ class MediaMatch(_DomainModel):
     source_id: str = Field(min_length=1)
     tmdb_id: int | None = Field(default=None, ge=1)
     score: float | None = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_media_season(self) -> "MediaMatch":
+        _validate_media_season(self.media_type, self.season)
+        return self
 
 
 class ProcessingResult(_DomainModel):

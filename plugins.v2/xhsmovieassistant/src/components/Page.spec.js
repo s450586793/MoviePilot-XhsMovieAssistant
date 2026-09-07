@@ -21,19 +21,26 @@ function request(overrides = {}) {
   }
 }
 
-function snapshot(row) {
+function snapshot(row, status = {}) {
   return {
     success: true,
     data: {
-      status: { activity: 'IDLE', browser: 'READY', login: 'LOGGED_IN' },
+      status: {
+        activity: 'IDLE',
+        browser: 'READY',
+        chromium: 'AVAILABLE',
+        chromium_code: null,
+        login: 'LOGGED_IN',
+        ...status,
+      },
       requests: [row],
     },
   }
 }
 
-async function mountPage({ row = request(), postResponse } = {}) {
+async function mountPage({ row = request(), postResponse, status, get } = {}) {
   const api = {
-    get: vi.fn().mockResolvedValue(snapshot(row)),
+    get: get || vi.fn().mockResolvedValue(snapshot(row, status)),
     post: vi.fn().mockResolvedValue(postResponse || { success: true, data: { status: 'SUBSCRIBED' } }),
   }
   const wrapper = mount(Page, {
@@ -50,6 +57,36 @@ function manualButton(wrapper) {
 }
 
 describe('Page manual resolution', () => {
+  it('clears a stale state-load error after a successful refresh', async () => {
+    const get = vi.fn()
+      .mockRejectedValueOnce(new Error('缓存读取失败'))
+      .mockResolvedValueOnce(snapshot(request()))
+    const { wrapper } = await mountPage({ get })
+
+    expect(wrapper.get('[data-alert-type="error"]').text()).toContain('缓存读取失败')
+
+    await wrapper.get('button[aria-label="刷新状态"]').trigger('click')
+    await flushPromises()
+
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-alert-type="error"]').exists()).toBe(false)
+  })
+
+  it('renders Chromium availability separately from browser session state', async () => {
+    const { wrapper } = await mountPage({
+      status: {
+        browser: 'READY',
+        chromium: 'UNAVAILABLE',
+        chromium_code: 'BROWSER_UNAVAILABLE',
+      },
+    })
+
+    const statusText = wrapper.get('.xhs-movie-page__status').text()
+    expect(statusText).toContain('浏览器READY')
+    expect(statusText).toContain('ChromiumUNAVAILABLE')
+    expect(statusText).toContain('BROWSER_UNAVAILABLE')
+  })
+
   it('rejects an unknown media type until the operator explicitly selects movie or tv', async () => {
     const { api, wrapper } = await mountPage({ row: request({ media_type: 'unknown' }) })
 

@@ -138,6 +138,27 @@ def test_match_normalizes_moviepilot_media_type_enum(gateway: MoviePilotGateway)
     assert decision.reason_code == "MATCHED"
 
 
+@pytest.mark.parametrize("candidate_type", [None, "", "   ", "unknown", "unsupported"])
+def test_match_rejects_candidate_without_exact_supported_type(
+    gateway: MoviePilotGateway, candidate_type: str | None
+) -> None:
+    candidate = media("星际穿越", 2014)
+    candidate.original_title = "Interstellar"
+    if candidate_type is None:
+        del candidate.type
+    else:
+        candidate.type = candidate_type
+    gateway.search_results.append(candidate)
+    requested = resolution(title="星际穿越", year=2014).model_copy(
+        update={"original_title": "Interstellar"}
+    )
+
+    decision = gateway.match(requested)
+
+    assert decision.match is None
+    assert decision.reason_code == "NO_MATCH"
+
+
 def test_single_exact_title_type_match_ignores_unrelated_same_type_result(
     gateway: MoviePilotGateway,
 ) -> None:
@@ -220,7 +241,6 @@ def matched_decision() -> MatchDecision:
             original_title="Interstellar",
             media_type="movie",
             year=2014,
-            season=1,
             source="tmdb",
             source_id="157336",
             tmdb_id=157336,
@@ -243,6 +263,41 @@ def test_submit_stops_when_media_already_exists(
     assert len(state.media_exists_calls) == 1
     assert state.subscribe_exists_calls == []
     assert state.add_calls == []
+
+
+def test_submit_rejects_bypassed_movie_season_before_loading_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import xhsmovieassistant.moviepilot as moviepilot_module
+
+    load_calls: list[bool] = []
+
+    def load_runtime() -> object:
+        load_calls.append(True)
+        raise AssertionError("runtime must not load")
+
+    monkeypatch.setattr(moviepilot_module, "_load_moviepilot_runtime", load_runtime)
+    invalid_match = MediaMatch.model_construct(
+        title="星际穿越",
+        original_title="Interstellar",
+        media_type="movie",
+        year=2014,
+        season=1,
+        source="tmdb",
+        source_id="157336",
+        tmdb_id=157336,
+        score=0.95,
+    )
+    decision = MatchDecision.model_construct(
+        match=invalid_match,
+        media_info=SimpleNamespace(title="星际穿越"),
+        reason_code="MATCHED",
+    )
+
+    outcome = MoviePilotGateway().submit(decision, enable_subscription=True)
+
+    assert outcome.status is RequestStatus.FAILED
+    assert load_calls == []
 
 
 def test_submit_only_treats_requested_tv_season_as_present_in_library(
@@ -323,7 +378,7 @@ def test_submit_uses_stable_identifiers_without_custom_subscription_options(
             "tmdbid": 157336,
             "media_source": "tmdb",
             "media_id": "157336",
-            "season": 1,
+            "season": None,
             "username": "小红书影视助手",
             "message": False,
             "exist_ok": True,

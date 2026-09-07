@@ -61,6 +61,29 @@ def test_resolution_accepts_a_concrete_media_result() -> None:
     assert resolution.season is None
 
 
+def test_resolution_allows_a_season_for_tv() -> None:
+    resolution = Resolution(
+        status="resolved",
+        title="The Last of Us",
+        media_type="tv",
+        season=2,
+        confidence=0.98,
+    )
+
+    assert resolution.season == 2
+
+
+def test_resolution_rejects_a_season_for_movie() -> None:
+    with pytest.raises(ValidationError, match="movie media cannot include a season"):
+        Resolution(
+            status="resolved",
+            title="Interstellar",
+            media_type="movie",
+            season=1,
+            confidence=0.98,
+        )
+
+
 @pytest.mark.parametrize(
     "values",
     [
@@ -102,6 +125,29 @@ def test_media_match_requires_a_stable_identity_and_valid_score() -> None:
             source="tmdb",
             source_id="",
             score=1.1,
+        )
+
+
+def test_media_match_allows_a_season_for_tv() -> None:
+    match = MediaMatch(
+        title="The Last of Us",
+        media_type="tv",
+        season=2,
+        source="tmdb",
+        source_id="100088",
+    )
+
+    assert match.season == 2
+
+
+def test_media_match_rejects_a_season_for_movie() -> None:
+    with pytest.raises(ValidationError, match="movie media cannot include a season"):
+        MediaMatch(
+            title="Interstellar",
+            media_type="movie",
+            season=1,
+            source="tmdb",
+            source_id="157336",
         )
 
 

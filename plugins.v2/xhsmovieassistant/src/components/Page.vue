@@ -7,7 +7,7 @@ const props = defineProps({
 
 const loading = ref(false)
 const actionKey = ref('')
-const feedback = ref({ type: 'info', text: '' })
+const feedback = ref({ type: 'info', text: '', source: '' })
 const snapshot = ref({ status: {}, requests: [] })
 const drafts = reactive({})
 
@@ -56,8 +56,8 @@ function isActionable(row) {
   return actionableStatuses.has(row.status)
 }
 
-function showFeedback(type, text) {
-  feedback.value = { type, text }
+function showFeedback(type, text, source = 'action') {
+  feedback.value = { type, text, source }
 }
 
 function actionFeedback(data, label) {
@@ -85,7 +85,7 @@ function actionFeedback(data, label) {
 
 async function loadState() {
   if (!props.api?.get) {
-    showFeedback('error', 'MoviePilot API 客户端不可用。')
+    showFeedback('error', 'MoviePilot API 客户端不可用。', 'state')
     return
   }
   loading.value = true
@@ -97,8 +97,11 @@ async function loadState() {
       requests: Array.isArray(data?.requests) ? data.requests : [],
     }
     requests.value.forEach(draftFor)
+    if (feedback.value.source === 'state') {
+      showFeedback('info', '', 'state')
+    }
   } catch (error) {
-    showFeedback('error', message(error, '无法读取缓存状态。'))
+    showFeedback('error', message(error, '无法读取缓存状态。'), 'state')
   } finally {
     loading.value = false
   }
@@ -170,6 +173,12 @@ onMounted(loadState)
       <dl>
         <div><dt>插件</dt><dd>{{ status.activity || 'IDLE' }}</dd></div>
         <div><dt>浏览器</dt><dd>{{ status.browser || 'UNKNOWN' }}</dd></div>
+        <div>
+          <dt>Chromium</dt>
+          <dd>
+            {{ status.chromium || 'UNKNOWN' }}<span v-if="status.chromium_code"> ({{ status.chromium_code }})</span>
+          </dd>
+        </div>
         <div><dt>登录</dt><dd>{{ status.login || 'UNKNOWN' }}</dd></div>
         <div><dt>暂停原因</dt><dd>{{ status.pause_code || '无' }}</dd></div>
       </dl>

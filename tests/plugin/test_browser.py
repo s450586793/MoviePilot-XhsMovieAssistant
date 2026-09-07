@@ -656,6 +656,20 @@ def test_capture_login_qrcode_returns_png_bytes_without_writing_file(
     assert list(tmp_path.rglob("*.png")) == []
 
 
+def test_capture_login_qrcode_allows_ordinary_sms_verification_copy(
+    manager, fake_playwright
+) -> None:
+    fake_playwright.page.text = "手机号登录 获取验证码"
+    fake_playwright.page.visible_selectors.update(
+        {".login-container", ".login-container .qrcode-img"}
+    )
+
+    result = manager.capture_login_qrcode()
+
+    assert result.success is True
+    assert result.data == fake_playwright.page.qr_png
+
+
 def test_capture_login_qrcode_skips_hidden_first_selector(manager, fake_playwright) -> None:
     fake_playwright.page.present_selectors.add(".login-container .qrcode-img")
     fake_playwright.page.visible_selectors.add(".qrcode-container img")
@@ -756,6 +770,18 @@ def test_detect_risk_returns_clear_result_for_normal_page(manager, fake_playwrig
     )
 
     assert manager.detect_risk(fake_playwright.page) == OperationResult(success=True)
+
+
+def test_ordinary_login_sms_copy_is_login_required_not_risk_control(
+    manager, fake_playwright
+) -> None:
+    fake_playwright.page.text = "手机号登录 获取验证码"
+    fake_playwright.page.visible_selectors.add(".login-container")
+
+    assert manager.detect_risk(fake_playwright.page) == OperationResult(success=True)
+    login = manager.detect_login_page(fake_playwright.page)
+    assert login.code == "LOGIN_REQUIRED"
+    assert login.should_pause is True
 
 
 @pytest.mark.parametrize(

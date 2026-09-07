@@ -94,17 +94,17 @@ class XhsGateway:
             with self._manager.session() as page:
                 notification_url = f"{self._manager.base_url}/notification"
                 navigation = page.goto(notification_url, wait_until="domcontentloaded")
-                _ensure_risk_ok(self._manager, page, _response_status(navigation))
+                _ensure_page_ok(self._manager, page, _response_status(navigation))
                 page.on("response", on_response)
                 try:
                     reload_response = page.reload(wait_until="domcontentloaded")
-                    _ensure_risk_ok(
+                    _ensure_page_ok(
                         self._manager, page, _response_status(reload_response)
                     )
                     _wait_for_mentions_response(page, captured)
                     if not captured:
                         raise XhsContractError("mentions response was not observed")
-                    _ensure_risk_ok(
+                    _ensure_page_ok(
                         self._manager, page, _optional_status(captured.get("status"))
                     )
                     if captured.get("error"):
@@ -127,7 +127,7 @@ class XhsGateway:
         try:
             with self._manager.session() as page:
                 response = page.goto(navigation_url, wait_until="domcontentloaded")
-                _ensure_risk_ok(self._manager, page, _response_status(response))
+                _ensure_page_ok(self._manager, page, _response_status(response))
                 page.wait_for_function(
                     """(noteId) => {
                         const unwrap = (value) => {
@@ -222,7 +222,7 @@ class XhsGateway:
         try:
             with self._manager.session() as page:
                 response = page.goto(navigation_url, wait_until="domcontentloaded")
-                risk = _risk_outcome(
+                risk = _page_outcome(
                     self._manager, page, _response_status(response)
                 )
                 if risk is not None:
@@ -250,7 +250,7 @@ class XhsGateway:
                     input_locator.click(timeout=2_000)
                     page.keyboard.insert_text(text)
 
-                risk = _risk_outcome(self._manager, page, None)
+                risk = _page_outcome(self._manager, page, None)
                 if risk is not None:
                     return risk
 
@@ -525,8 +525,8 @@ def _css_identifier(value: str) -> str:
     return "".join(escaped)
 
 
-def _risk_outcome(manager: Any, page: Any, status: int | None) -> ReplyOutcome | None:
-    result = manager.detect_risk(page, status)
+def _page_outcome(manager: Any, page: Any, status: int | None) -> ReplyOutcome | None:
+    result = _classify_page(manager, page, status)
     if result.success:
         return None
     if result.should_pause:
@@ -547,7 +547,7 @@ def _confirm_reply_submission(
     while True:
         if submit_responses:
             return _reply_response_outcome(manager, page, submit_responses.pop(0))
-        risk = _risk_outcome(manager, page, None)
+        risk = _page_outcome(manager, page, None)
         if risk is not None:
             return risk
         if remaining_ms <= 0 or monotonic() >= deadline:
@@ -565,7 +565,7 @@ def _reply_response_outcome(manager: Any, page: Any, response: Any) -> ReplyOutc
         return _reply_failure("AUTH_REQUIRED", "Browser operation paused")
     if status == 429:
         return _reply_failure("RATE_LIMITED", "Browser operation paused")
-    risk = _risk_outcome(manager, page, status)
+    risk = _page_outcome(manager, page, status)
     if risk is not None:
         return risk
     if status is None or not 200 <= status < 300:
@@ -645,8 +645,15 @@ def _reply_id_from_payload(payload: Mapping[object, object]) -> str | None:
     return None
 
 
-def _ensure_risk_ok(manager: Any, page: Any, status: int | None) -> None:
-    result = manager.detect_risk(page, status)
+def _classify_page(manager: Any, page: Any, status: int | None) -> Any:
+    risk = manager.detect_risk(page, status)
+    if not risk.success:
+        return risk
+    return manager.detect_login_page(page)
+
+
+def _ensure_page_ok(manager: Any, page: Any, status: int | None) -> None:
+    result = _classify_page(manager, page, status)
     if result.success:
         return
     if result.should_pause:

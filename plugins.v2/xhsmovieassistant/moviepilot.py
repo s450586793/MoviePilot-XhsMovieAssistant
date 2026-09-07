@@ -194,10 +194,12 @@ class MoviePilotGateway:
         """Check existing media and submit only through MoviePilot's native chain."""
         if decision.match is None or decision.media_info is None:
             raise ValueError("match decision requires match and media_info")
+        match = decision.match
+        if match.media_type == "movie" and match.season is not None:
+            return SubscriptionOutcome(status=RequestStatus.FAILED)
 
         try:
             runtime = _load_moviepilot_runtime()
-            match = decision.match
             meta = runtime.MetaInfo(match.title)
             if match.year is not None:
                 meta.year = str(match.year)
@@ -256,7 +258,7 @@ class MoviePilotGateway:
         for media_info in deduplicated.values():
             candidate_type = _type_name(_value(media_info, "type", "media_type"))
             candidate_year = str(_value(media_info, "year") or "")
-            if candidate_type and candidate_type != resolution.media_type:
+            if candidate_type != resolution.media_type:
                 continue
             if resolution.year is not None and candidate_year != str(resolution.year):
                 continue

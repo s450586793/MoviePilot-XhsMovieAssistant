@@ -243,7 +243,7 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     remote_entry = remote_entry_asset.read_text(encoding="utf-8")
 
     assert XhsMovieAssistant().get_render_mode() == ("vue", "dist/assets")
-    assert package["scripts"]["build"] == "vite build"
+    assert package["scripts"]["build"] == "vite build && node normalize-dist.mjs"
     assert package["scripts"]["test"] == "vitest run"
     assert {
         "vue",
@@ -258,6 +258,7 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     )
     assert (plugin_root / "package-lock.json").is_file()
     assert (plugin_root / "vite.config.js").is_file()
+    assert (plugin_root / "normalize-dist.mjs").is_file()
     assert (plugin_root / "src" / "main.js").is_file()
     assert (plugin_root / "src" / "components" / "Config.vue").is_file()
     assert (plugin_root / "src" / "components" / "Page.vue").is_file()
@@ -285,6 +286,12 @@ def test_vue_federation_package_and_tracked_build_are_installable() -> None:
     assert "function actionFeedback" in page_code
     assert "status === 'FAILED'" in page_code
     assert "status === 'NEED_CONFIRMATION'" in page_code
+    assert all(
+        re.search(r"[ \t]+$", path.read_text(encoding="utf-8"), re.MULTILINE)
+        is None
+        for path in asset_dir.rglob("*")
+        if path.is_file()
+    ), "dist/assets contains trailing whitespace"
     assert "min-width: 44px" in "\n".join(
         path.read_text(encoding="utf-8")
         for path in (config_css_asset, page_css_asset)
