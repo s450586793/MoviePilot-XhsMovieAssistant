@@ -263,6 +263,56 @@ def test_duplicate_mention_never_resolves_twice(service: AssistantService) -> No
     assert service.resolver.calls == 1
 
 
+def test_poll_once_skips_mention_identity_conflict(tmp_path: Path) -> None:
+    service, repository, xhs, resolver, moviepilot, _ = build_service(
+        tmp_path / "assistant.db"
+    )
+    repository.save_mention(
+        NewMention(
+            note_id="note-m1",
+            note_url="https://www.xiaohongshu.com/explore/note-m1",
+            mention_id="m1",
+            sender_user_id="authorized-user",
+            comment_id="comment-m1",
+            comment_text="想看星际穿越",
+            created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        )
+    )
+    xhs.mentions = [mention(comment_text="想看沙丘")]
+
+    assert service.poll_once() == []
+
+    assert resolver.calls == 0
+    assert moviepilot.calls == 0
+
+
+def test_poll_once_propagates_terminal_outbox_metadata_conflict(tmp_path: Path) -> None:
+    service, repository, xhs, _, _, _ = build_service(tmp_path / "assistant.db")
+    saved = repository.save_mention(
+        NewMention(
+            note_id="note-m1",
+            note_url="https://www.xiaohongshu.com/explore/note-m1",
+            mention_id="m1",
+            sender_user_id="authorized-user",
+            comment_id="comment-m1",
+            comment_text="想看",
+            created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        )
+    )
+    repository.enqueue_notification(
+        "REPLY_FAILURE",
+        request_id=saved.request.id,
+        code="REPLY_FAILED",
+        dedupe_key=f"REQUEST_RESULT:{saved.request.id}:0",
+    )
+    xhs.mentions = [mention()]
+
+    with pytest.raises(RuntimeError, match="notification dedupe key"):
+        service.poll_once()
+
+    assert repository.get(saved.request.id).status is RequestStatus.MATCHED  # type: ignore[union-attr]
+
+
 def test_recovered_request_is_retried_by_next_poll_after_restart(tmp_path: Path) -> None:
     database_path = tmp_path / "assistant.db"
     interrupted_at = datetime(2026, 9, 7, 11, 40, tzinfo=timezone.utc)

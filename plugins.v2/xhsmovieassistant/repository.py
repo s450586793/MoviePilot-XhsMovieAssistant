@@ -35,6 +35,10 @@ class IdempotencyConflict(RuntimeError):
     """Raised when independent unique keys identify different requests."""
 
 
+class NotificationIdempotencyConflict(RuntimeError):
+    """Raised when one outbox dedupe key identifies different metadata."""
+
+
 ALLOWED_TRANSITIONS: dict[RequestStatus, set[RequestStatus]] = {
     RequestStatus.NEW: {RequestStatus.FETCHED, RequestStatus.IGNORED, RequestStatus.FAILED},
     RequestStatus.FETCHED: {RequestStatus.RESOLVING, RequestStatus.FAILED},
@@ -875,7 +879,9 @@ def _enqueue_notification(
         or row["request_id"] != request_id
         or row["code"] != safe_code
     ):
-        raise IdempotencyConflict("notification dedupe key identifies a different event")
+        raise NotificationIdempotencyConflict(
+            "notification dedupe key identifies a different event"
+        )
     return _notification_from_row(row)
 
 

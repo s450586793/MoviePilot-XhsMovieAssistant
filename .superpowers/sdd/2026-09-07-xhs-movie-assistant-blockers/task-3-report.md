@@ -101,3 +101,64 @@ E AssertionError: assert [] == [('小红书监听已暂停', '暂停原因：AUT
 - 现有 metadata-only persistence 测试仍验证 secret dedupe material 不落库；本次新
   dedupe material 也只在 `_enqueue_notification()` 中先 SHA-256 后写入。
 - 未执行真实 XHS/RedNote、MoviePilot、企业微信、Chromium 或登录相关操作。
+
+## Fix Round 1：Outbox 冲突不再被 poll 吞掉
+
+### RED
+
+新增真实 service 回归：预先写入一个 `REPLY_FAILURE` event，但故意使用将由同一
+request 的 terminal transition 使用的 `REQUEST_RESULT:<id>:0` dedupe material。
+持久化层先 SHA-256，再发现同 hash 的现有 metadata 不一致。原实现确实 rollback
+terminal transition，但 `poll_once()` 把共用的 `IdempotencyConflict` 当成 mention
+identity conflict 并 `continue`，因此没有向调用者暴露故障。另加 mention identity
+conflict 回归，固定其继续跳过、不调用 resolver/MoviePilot 的既有行为。
+
+```bash
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_service.py -k 'mention_identity_conflict or terminal_outbox_metadata_conflict'
+```
+
+```text
+.F                                                                       [100%]
+E Failed: DID NOT RAISE <class 'RuntimeError'>
+1 failed, 1 passed, 44 deselected in 1.35s
+```
+
+### GREEN 与设计
+
+新增 `NotificationIdempotencyConflict(RuntimeError)`，仅用于 outbox dedupe hash 已
+存在但 kind/request id/code 不匹配的 metadata conflict。它不是 mention identity
+使用的 `IdempotencyConflict` 子类，因此既有 `poll_once()` catch 仍只吞掉 mention
+identity conflict；outbox conflict 保持原 transaction rollback 后向调用方传播。没有
+拓宽或重构 poll 的其他异常处理。
+
+```bash
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_service.py -k 'mention_identity_conflict or terminal_outbox_metadata_conflict'
+```
+
+```text
+..                                                                       [100%]
+2 passed, 44 deselected in 0.78s
+```
+
+### 回归与自审
+
+```bash
+.venv/bin/pytest -o addopts='' -q tests/plugin/test_repository.py tests/plugin/test_service.py tests/plugin/test_plugin.py
+```
+
+```text
+133 passed in 4.37s
+```
+
+```bash
+.venv/bin/pytest -o addopts='' -q
+```
+
+```text
+392 passed in 5.35s
+```
+
+- `python -m compileall -q` 和 `git diff --check` 通过。
+- service regression 确认冲突后状态为 `MATCHED`，即先前已独立提交的 pipeline
+  transition 保留，而产生冲突的 terminal `DRY_RUN_MATCHED` transaction 已 rollback。
+- mention identity regression 仍断言 poll 返回空列表且没有 resolver/MoviePilot 调用。
