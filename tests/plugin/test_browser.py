@@ -330,6 +330,37 @@ def test_install_chromium_uses_only_fixed_argv_and_private_cache(
     assert "shell" not in observed["kwargs"]
 
 
+def test_install_chromium_uses_configured_proxy_for_download(
+    tmp_path, monkeypatch
+) -> None:
+    observed = {}
+
+    def fake_run(argv, **kwargs):
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, stdout="installed", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    browser = BrowserManager(
+        tmp_path,
+        "rednote",
+        {
+            "server": "http://proxy.example:7890",
+            "username": "user name",
+            "password": "p@ss",
+        },
+        lambda: None,
+    )
+
+    result = browser.install_chromium()
+
+    assert result.success is True
+    expected = "http://user%20name:p%40ss@proxy.example:7890"
+    assert observed["env"]["HTTP_PROXY"] == expected
+    assert observed["env"]["HTTPS_PROXY"] == expected
+    assert observed["env"]["http_proxy"] == expected
+    assert observed["env"]["https_proxy"] == expected
+
+
 def test_install_chromium_cannot_reenter_an_active_browser_operation(
     manager, monkeypatch
 ) -> None:

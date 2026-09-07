@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 
 
 _SITE_ORIGINS = {
@@ -107,6 +107,10 @@ class BrowserManager:
         self.browser_path.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["PLAYWRIGHT_BROWSERS_PATH"] = str(self.browser_path)
+        proxy_url = _proxy_environment_url(self.proxy)
+        if proxy_url:
+            for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                env[name] = proxy_url
         argv = [sys.executable, "-m", "playwright", "install", "chromium"]
         try:
             completed = subprocess.run(
@@ -315,6 +319,40 @@ def _default_playwright() -> Any:
     from playwright.sync_api import sync_playwright
 
     return sync_playwright().start()
+
+
+def _proxy_environment_url(proxy: Mapping[str, Any] | None) -> str | None:
+    """Convert Playwright proxy settings into a downloader proxy URL."""
+    if not isinstance(proxy, Mapping):
+        return None
+    server = proxy.get("server")
+    if not isinstance(server, str) or not server.strip():
+        return None
+    server = server.strip()
+    username = proxy.get("username")
+    if not isinstance(username, str) or not username:
+        return server
+
+    candidate = server if "://" in server else f"http://{server}"
+    parsed = urlsplit(candidate)
+    if not parsed.hostname:
+        return server
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    credentials = quote(username, safe="")
+    password = proxy.get("password")
+    if isinstance(password, str):
+        credentials = f"{credentials}:{quote(password, safe='')}"
+    return urlunsplit(
+        (
+            parsed.scheme or "http",
+            f"{credentials}@{host}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
 
 
 @contextmanager

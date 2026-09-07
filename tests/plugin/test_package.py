@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.1.2": "Chromium 下载复用 MoviePilot 代理配置，避免直连超时。",
         "v0.1.1": "兼容 MoviePilot 已安装的 Playwright 1.x，避免共享依赖冲突。",
         "v0.1.0": "首个可测试版本，支持扫码、授权艾特、AI 识别、去重和订阅。",
     }
