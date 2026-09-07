@@ -163,7 +163,7 @@ class AssistantService:
         """Requeue and process one eligible request using durable safe fields."""
         self._flush_notifications()
         stored = self._require_authorized(request_id)
-        if stored.status in _REPROCESSABLE:
+        if stored.status is not RequestStatus.NEW:
             self.repository.requeue(request_id, authenticated=True)
         if stored.note is None:
             return self._complete(

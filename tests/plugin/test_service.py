@@ -15,7 +15,11 @@ from xhsmovieassistant.models import (
     Resolution,
 )
 from xhsmovieassistant.moviepilot import MatchDecision, SubscriptionOutcome
-from xhsmovieassistant.repository import NewMention, RequestRepository
+from xhsmovieassistant.repository import (
+    InvalidTransition,
+    NewMention,
+    RequestRepository,
+)
 from xhsmovieassistant.resolver import ResolverError
 from xhsmovieassistant.service import AssistantService
 from xhsmovieassistant.xhs import (
@@ -356,6 +360,40 @@ def test_reprocess_resumes_recovered_new_request_from_durable_snapshot(
     assert resolver.calls == 1
     assert len(moviepilot.match_calls) == 1
     assert len(moviepilot.submit_calls) == 1
+
+
+def test_reprocess_rejects_resolving_request(tmp_path: Path) -> None:
+    service, repository, xhs, resolver, moviepilot, _ = build_service(
+        tmp_path / "assistant.db"
+    )
+    saved = repository.save_mention(
+        NewMention(
+            note_id="note-m1",
+            note_url="https://www.xiaohongshu.com/explore/note-m1",
+            mention_id="m1",
+            sender_user_id="authorized-user",
+            comment_id="comment-m1",
+            comment_text="想看",
+            created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        )
+    )
+    repository.transition(
+        saved.request.id,
+        RequestStatus.FETCHED,
+        note=NoteContext(
+            id="note-m1",
+            url="https://www.xiaohongshu.com/explore/note-m1",
+            title="星际穿越",
+        ),
+    )
+    repository.transition(saved.request.id, RequestStatus.RESOLVING)
+
+    with pytest.raises(InvalidTransition, match="Cannot requeue RESOLVING"):
+        service.reprocess(saved.request.id)
+
+    assert xhs.fetch_note_calls == 0
+    assert resolver.calls == 0
+    assert moviepilot.calls == 0
 
 
 def test_subscribed_pipeline_commits_each_state_before_external_calls(
