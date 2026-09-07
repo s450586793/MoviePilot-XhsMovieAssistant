@@ -14,6 +14,7 @@ from .xhs_contracts import TransientMention, parse_mentions_payload
 
 
 _MENTIONS_PATH = "/api/sns/web/v1/you/mentions"
+_NOTIFICATION_LINK_SELECTOR = 'a[href="/notification"], a[href^="/notification?"]'
 _REPLY_SUBMIT_PATH = "/api/sns/web/v1/comment/post"
 _MENTIONS_TIMEOUT_MS = 20_000
 _NOTE_TIMEOUT_MS = 15_000
@@ -75,7 +76,7 @@ class XhsGateway:
         self._replies_enabled = replies_enabled
 
     def fetch_mentions(self, limit: int = 20) -> tuple[TransientMention, ...]:
-        """Capture and parse the first mentions response after one page reload."""
+        """Capture and parse the first response from the notifications view."""
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("limit must be between 1 and 20")
 
@@ -93,14 +94,22 @@ class XhsGateway:
         try:
             with self._manager.session() as page:
                 notification_url = f"{self._manager.base_url}/notification"
-                navigation = page.goto(notification_url, wait_until="domcontentloaded")
+                rednote = urlsplit(self._manager.base_url).hostname == "www.rednote.com"
+                entry_url = self._manager.base_url if rednote else notification_url
+                navigation = page.goto(entry_url, wait_until="domcontentloaded")
                 _ensure_page_ok(self._manager, page, _response_status(navigation))
                 page.on("response", on_response)
                 try:
-                    reload_response = page.reload(wait_until="domcontentloaded")
-                    _ensure_page_ok(
-                        self._manager, page, _response_status(reload_response)
-                    )
+                    if rednote:
+                        page.locator(_NOTIFICATION_LINK_SELECTOR).first.click(
+                            timeout=_MENTIONS_TIMEOUT_MS
+                        )
+                        _ensure_page_ok(self._manager, page, None)
+                    else:
+                        reload_response = page.reload(wait_until="domcontentloaded")
+                        _ensure_page_ok(
+                            self._manager, page, _response_status(reload_response)
+                        )
                     _wait_for_mentions_response(page, captured)
                     if not captured:
                         raise XhsContractError("mentions response was not observed")

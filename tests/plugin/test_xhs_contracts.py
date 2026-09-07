@@ -36,6 +36,23 @@ def test_only_mention_comment_with_stable_user_id_is_accepted() -> None:
     assert [(item.mention_id, item.sender_user_id) for item in mentions] == [("m1", "u-main")]
 
 
+def test_rednote_track_type_eight_accepts_mentions_but_rejects_normal_comments() -> None:
+    payload = {
+        "data": {
+            "message_list": [
+                _message(id="m-item", type="comment/item", track_type="8"),
+                _message(id="m-comment", type="comment/comment", track_type="8"),
+                _message(id="normal-item", type="comment/item", track_type="41"),
+                _message(id="normal-comment", type="comment/comment", track_type="26"),
+            ]
+        }
+    }
+
+    mentions = parse_mentions_payload(payload)
+
+    assert [item.mention_id for item in mentions] == ["m-item", "m-comment"]
+
+
 def test_authorized_ids_support_lines_commas_and_whitespace() -> None:
     assert parse_authorized_ids(" u1\nu2, u3 , u1 ") == frozenset({"u1", "u2", "u3"})
 

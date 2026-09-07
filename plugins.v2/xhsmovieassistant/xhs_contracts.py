@@ -8,6 +8,11 @@ from typing import Any, Mapping
 import unicodedata
 
 
+_LEGACY_MENTION_TYPE = "mention/comment"
+_REDNOTE_COMMENT_TYPES = frozenset({"comment/item", "comment/comment"})
+_REDNOTE_MENTION_TRACK_TYPE = "8"
+
+
 @dataclass(frozen=True)
 class TransientMention:
     """One authorized-candidate mention; its token is never durable or loggable."""
@@ -34,7 +39,7 @@ def parse_authorized_ids(raw: object) -> frozenset[str]:
 
 
 def parse_mentions_payload(payload: object) -> tuple[TransientMention, ...]:
-    """Return valid ``mention/comment`` messages without retaining raw payloads."""
+    """Return valid mention messages without retaining raw payloads."""
     data = _mapping(payload).get("data")
     messages = _mapping(data).get("message_list")
     if not isinstance(messages, list):
@@ -43,7 +48,7 @@ def parse_mentions_payload(payload: object) -> tuple[TransientMention, ...]:
     mentions: list[TransientMention] = []
     for raw in messages:
         message = _mapping(raw)
-        if message.get("type") != "mention/comment":
+        if not _is_mention(message):
             continue
         user = _mapping(message.get("user_info"))
         comment = _mapping(message.get("comment_info"))
@@ -70,6 +75,16 @@ def parse_mentions_payload(payload: object) -> tuple[TransientMention, ...]:
             )
         )
     return tuple(mentions)
+
+
+def _is_mention(message: Mapping[str, Any]) -> bool:
+    message_type = _text(message.get("type"), 64)
+    if message_type == _LEGACY_MENTION_TYPE:
+        return True
+    return (
+        message_type in _REDNOTE_COMMENT_TYPES
+        and _text(message.get("track_type"), 16) == _REDNOTE_MENTION_TRACK_TYPE
+    )
 
 
 def _mapping(value: object) -> Mapping[str, Any]:

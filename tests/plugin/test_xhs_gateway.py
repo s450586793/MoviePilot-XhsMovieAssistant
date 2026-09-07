@@ -238,6 +238,12 @@ class FakeLocator:
         if self.kind == "reply":
             self.page.reply_clicks += 1
             return
+        if self.selector == 'a[href="/notification"], a[href^="/notification?"]':
+            self.page.actions.append("click_notification")
+            origin = urlsplit(self.page.url)
+            self.page.url = f"{origin.scheme}://{origin.netloc}/notification"
+            self.page.emit_responses()
+            return
         if self.selector == "div.bottom button.submit":
             self.page.submit_clicks += 1
             if self.page.submit_error is not None:
@@ -332,10 +338,13 @@ class FakePage:
 
     def reload(self, **kwargs: object) -> FakeResponse:
         self.actions.append("reload")
+        self.emit_responses()
+        return FakeResponse(self.url, status=self.reload_status)
+
+    def emit_responses(self) -> None:
         for response in self.responses:
             for callback in tuple(self.listeners):
                 callback(response)
-        return FakeResponse(self.url, status=self.reload_status)
 
     def wait_for_timeout(self, timeout: int) -> None:
         self.wait_timeouts.append(timeout)
@@ -454,6 +463,28 @@ def test_fetch_mentions_registers_listener_before_reload_and_removes_it(
 
     assert fake_page.actions == ["register_response", "reload", "remove_response"]
     assert mentions[0].xsec_token == "transient-token-0"
+    assert fake_page.listeners == []
+
+
+def test_fetch_mentions_uses_rednote_in_app_notification_navigation(
+    fake_page: FakePage,
+) -> None:
+    fake_page.url = "https://www.rednote.com/notification"
+    fake_page.responses = [FakeResponse(MENTIONS_API_URL, payload=mention_payload())]
+    gateway = XhsGateway(
+        FakeManager(fake_page, base_url="https://www.rednote.com"),
+        replies_enabled=True,
+    )
+
+    mentions = gateway.fetch_mentions()
+
+    assert mentions[0].mention_id == "mention-0"
+    assert fake_page.goto_url == "https://www.rednote.com"
+    assert fake_page.actions == [
+        "register_response",
+        "click_notification",
+        "remove_response",
+    ]
     assert fake_page.listeners == []
 
 
