@@ -794,8 +794,16 @@ def test_note_pause_fails_current_request_and_stops_the_batch(tmp_path: Path) ->
     assert [request.mention_id for request in repository.recent(10)] == ["m1"]
     assert repository.get_runtime_state().pause_code == "RATE_LIMITED"
     assert notifications == [
-        ("小红书监听已暂停", "暂停原因：RATE_LIMITED"),
-        ("小红书影视助手", "请求 1 处理结果：FAILED"),
+        (
+            "小红书影视助手异常",
+            "⚠️ 小红书影视助手异常\n检测到小红书风控，监听已暂停，请人工检查。",
+        ),
+        (
+            "小红书影视助手",
+            "⚠️ 处理失败\n"
+            "https://www.xiaohongshu.com/explore/note-m1\n"
+            "处理失败，请在插件详情中查看。",
+        ),
     ]
 
 
@@ -986,6 +994,145 @@ def test_notification_failure_does_not_change_committed_result(tmp_path: Path) -
     assert repository.recent(1)[0].status is RequestStatus.DRY_RUN_MATCHED
 
 
+def test_dry_run_notification_describes_the_matched_media(tmp_path: Path) -> None:
+    service, _, xhs, resolver, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [
+        Resolution(
+            status="resolved",
+            title="家族的形式",
+            original_title="家族ノカタチ",
+            media_type="tv",
+            year=2016,
+            season=1,
+            confidence=0.98,
+        )
+    ]
+    moviepilot.match_outcomes = [
+        MatchDecision(
+            match=MediaMatch(
+                title="家族的形式",
+                original_title="家族ノカタチ",
+                media_type="tv",
+                year=2016,
+                season=1,
+                source="tmdb",
+                source_id="68983",
+                tmdb_id=68983,
+                score=1.0,
+            ),
+            media_info=object(),
+            reason_code="MATCHED",
+        )
+    ]
+
+    service.poll_once()
+
+    assert notifications == [
+        (
+            "小红书影视助手",
+            "🎬 已识别（测试模式）\n"
+            "《家族的形式》\n"
+            "2016 · TV · 第 1 季\n"
+            "MoviePilot：匹配成功，未创建订阅",
+        )
+    ]
+
+
+def test_not_media_notification_uses_note_context_without_tokens(tmp_path: Path) -> None:
+    service, _, xhs, resolver, _, notifications = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [resolution(status="not_media", confidence=0.99)]
+
+    service.poll_once()
+
+    assert notifications == [
+        (
+            "小红书影视助手",
+            "⚠️ 无法确定影视作品\n"
+            "小红书：星际穿越\n"
+            "https://www.xiaohongshu.com/explore/note-m1\n"
+            "需要人工确认。",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "subscription_id", "expected_text"),
+    [
+        (
+            RequestStatus.SUBSCRIBED,
+            "42",
+            "🎬 已添加订阅\n"
+            "《星际穿越》\n"
+            "2014 · Movie\n"
+            "MoviePilot：订阅成功",
+        ),
+        (
+            RequestStatus.ALREADY_SUBSCRIBED,
+            None,
+            "🎬 已存在\n"
+            "《星际穿越》\n"
+            "2014 · Movie\n"
+            "已经订阅，无需重复添加。",
+        ),
+        (
+            RequestStatus.ALREADY_IN_LIBRARY,
+            None,
+            "🎬 已存在\n"
+            "《星际穿越》\n"
+            "2014 · Movie\n"
+            "已经在媒体库中，无需重复添加。",
+        ),
+        (
+            RequestStatus.FAILED,
+            None,
+            "⚠️ 处理失败\n"
+            "《星际穿越》\n"
+            "2014 · Movie\n"
+            "处理失败，请在插件详情中查看。",
+        ),
+    ],
+)
+def test_subscription_notification_explains_the_outcome(
+    tmp_path: Path,
+    status: RequestStatus,
+    subscription_id: str | None,
+    expected_text: str,
+) -> None:
+    service, _, xhs, _, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db", enable_subscription=True
+    )
+    xhs.mentions = [mention()]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=status, subscription_id=subscription_id)
+    ]
+
+    service.poll_once()
+
+    assert notifications == [("小红书影视助手", expected_text)]
+
+
+def test_login_pause_notification_explains_the_required_action(tmp_path: Path) -> None:
+    service, _, xhs, _, _, notifications = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mention_failures = [XhsPausedError("AUTH_REQUIRED")]
+
+    service.poll_once()
+
+    assert notifications == [
+        (
+            "小红书影视助手异常",
+            "⚠️ 小红书影视助手异常\n登录状态失效，请重新登录。",
+        )
+    ]
+
+
 def test_cancellation_after_terminal_commit_leaves_result_outbox_durable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1046,7 +1193,12 @@ def test_pause_event_is_delivered_after_disabled_business_backlog(tmp_path: Path
 
     service.poll_once()
 
-    assert deliveries == [("小红书监听已暂停", "暂停原因：AUTH_REQUIRED")]
+    assert deliveries == [
+        (
+            "小红书影视助手异常",
+            "⚠️ 小红书影视助手异常\n登录状态失效，请重新登录。",
+        )
+    ]
 
 
 def test_terminal_notification_failure_retries_after_restart_once(
