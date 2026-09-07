@@ -172,6 +172,7 @@ onMounted(loadState)
     <section class="xhs-movie-page__status" aria-label="缓存服务状态">
       <dl>
         <div><dt>插件</dt><dd>{{ status.activity || 'IDLE' }}</dd></div>
+        <div><dt>浏览器模式</dt><dd>{{ status.browser_mode || 'EMBEDDED' }}</dd></div>
         <div><dt>浏览器</dt><dd>{{ status.browser || 'UNKNOWN' }}</dd></div>
         <div>
           <dt>Chromium</dt>
@@ -190,7 +191,7 @@ onMounted(loadState)
         <h2 id="management-actions">管理与诊断</h2>
       </div>
       <div class="xhs-movie-page__tool-grid">
-        <VBtn prepend-icon="mdi-download" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/chromium/install'" @click="runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')">安装 Chromium</VBtn>
+        <VBtn v-if="status.browser_mode !== 'CDP'" prepend-icon="mdi-download" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/chromium/install'" @click="runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')">安装 Chromium</VBtn>
         <VBtn prepend-icon="mdi-qrcode-scan" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/login/start'" @click="runAction('plugin/XhsMovieAssistant/login/start', '登录二维码生成')">生成登录二维码</VBtn>
         <VBtn prepend-icon="mdi-refresh" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/poll'" @click="runAction('plugin/XhsMovieAssistant/poll', '立即轮询')">立即轮询</VBtn>
         <VBtn prepend-icon="mdi-play" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/resume'" @click="runAction('plugin/XhsMovieAssistant/resume', '恢复轮询')">恢复轮询</VBtn>

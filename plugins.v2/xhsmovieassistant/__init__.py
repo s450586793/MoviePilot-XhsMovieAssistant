@@ -39,6 +39,9 @@ _DEFAULTS: dict[str, Any] = {
     "notifications_enabled": True,
     "reply_enabled": False,
     "site": "xiaohongshu",
+    "browser_mode": "embedded",
+    "cdp_url": "",
+    "cdp_token": "",
     "authorized_user_ids": "",
     "poll_interval_minutes": 2,
     "confidence_threshold": 0.85,
@@ -114,7 +117,7 @@ class XhsMovieAssistant(_PluginBase):
     plugin_name = "小红书影视助手"
     plugin_desc = "从授权账号的小红书 @ 请求识别影视作品并交给 MoviePilot 订阅。"
     plugin_icon = "xhsmovieassistant.png"
-    plugin_version = "0.1.2"
+    plugin_version = "0.1.3"
     plugin_author = "s450586793"
     author_url = "https://github.com/s450586793/MoviePilot-XhsMovieAssistant"
     plugin_config_prefix = "xhsmovieassistant_"
@@ -131,6 +134,9 @@ class XhsMovieAssistant(_PluginBase):
             category: False for category in REPLY_CATEGORY_STATUSES
         }
         self._site = "xiaohongshu"
+        self._browser_mode = "embedded"
+        self._cdp_url = ""
+        self._cdp_token: str | None = None
         self._authorized_user_ids = frozenset()
         self._authorized_user_ids_raw = ""
         self._poll_interval_minutes = 2
@@ -295,6 +301,31 @@ class XhsMovieAssistant(_PluginBase):
                     {"title": "小红书", "value": "xiaohongshu"},
                     {"title": "RedNote", "value": "rednote"},
                 ],
+            ),
+            _field(
+                "VSelect",
+                "浏览器模式",
+                "browser_mode",
+                cols=6,
+                items=[
+                    {"title": "内置 Chromium", "value": "embedded"},
+                    {"title": "CloakBrowser / CDP", "value": "cdp"},
+                ],
+            ),
+            _field(
+                "VTextField",
+                "CloakBrowser CDP URL",
+                "cdp_url",
+                cols=8,
+                placeholder="http://NAS-IP:9050/api/profiles/PROFILE-ID/cdp",
+            ),
+            _field(
+                "VTextField",
+                "CDP Access Token",
+                "cdp_token",
+                cols=4,
+                type="password",
+                autocomplete="new-password",
             ),
             _field(
                 "VTextField",
@@ -647,12 +678,16 @@ class XhsMovieAssistant(_PluginBase):
             browser = self._browser
             self._clear_runtime(keep_repository=False)
         if browser is not None:
-            context = getattr(browser, "_active_context", None)
-            if context is not None:
-                try:
-                    context.close()
-                except Exception:
-                    pass
+            try:
+                close_active_context = getattr(browser, "close_active_context", None)
+                if callable(close_active_context):
+                    close_active_context()
+                else:
+                    context = getattr(browser, "_active_context", None)
+                    if context is not None:
+                        context.close()
+            except Exception:
+                pass
         if worker is not None and worker is not threading.current_thread():
             try:
                 worker.join(timeout=_JOIN_TIMEOUT_SECONDS)
@@ -672,6 +707,13 @@ class XhsMovieAssistant(_PluginBase):
         }
         site = str(values.get("site") or "").strip()
         self._site = site if site in _SITE_URLS else "xiaohongshu"
+        browser_mode = str(values.get("browser_mode") or "").strip()
+        self._browser_mode = (
+            browser_mode if browser_mode in {"embedded", "cdp"} else "embedded"
+        )
+        self._cdp_url = str(values.get("cdp_url") or "").strip()
+        self._cdp_token = str(values.get("cdp_token") or "").strip() or None
+        self._cached_status["browser_mode"] = self._browser_mode.upper()
         raw_ids = values.get("authorized_user_ids")
         self._authorized_user_ids_raw = raw_ids if isinstance(raw_ids, str) else ""
         self._authorized_user_ids = parse_authorized_ids(raw_ids)
@@ -703,6 +745,9 @@ class XhsMovieAssistant(_PluginBase):
             self.get_data_path(),
             self._site,
             getattr(settings, "PROXY_SERVER", None),
+            browser_mode=self._browser_mode,
+            cdp_url=self._cdp_url,
+            cdp_token=self._cdp_token,
         )
         resolver = MediaResolver()
         moviepilot = MoviePilotGateway()
@@ -739,7 +784,16 @@ class XhsMovieAssistant(_PluginBase):
             self._resolver = resolver
             self._moviepilot = moviepilot
             self._service = service
-            self._cached_status.update(browser=BrowserState.READY.value, activity="IDLE")
+            chromium = (
+                "EXTERNAL"
+                if self._browser_mode == "cdp"
+                else self._cached_status.get("chromium", "UNKNOWN")
+            )
+            self._cached_status.update(
+                browser=BrowserState.READY.value,
+                chromium=chromium,
+                activity="IDLE",
+            )
 
     def _ensure_browser(self) -> BrowserManager:
         if self._browser is None:
@@ -747,7 +801,12 @@ class XhsMovieAssistant(_PluginBase):
                 self.get_data_path(),
                 self._site,
                 getattr(settings, "PROXY_SERVER", None),
+                browser_mode=self._browser_mode,
+                cdp_url=self._cdp_url,
+                cdp_token=self._cdp_token,
             )
+            if self._browser_mode == "cdp":
+                self._cached_status["chromium"] = "EXTERNAL"
         return self._browser
 
     def _start_worker(self, activity: str, operation: Callable[[], Any]) -> bool:
@@ -773,8 +832,15 @@ class XhsMovieAssistant(_PluginBase):
                         and isinstance(outcome, OperationResult)
                         and activity == "chromium_install"
                     ):
+                        chromium = "UNAVAILABLE"
+                        if outcome.success:
+                            chromium = (
+                                "EXTERNAL"
+                                if outcome.data == "EXTERNAL"
+                                else "AVAILABLE"
+                            )
                         self._cached_status.update(
-                            chromium="AVAILABLE" if outcome.success else "UNAVAILABLE",
+                            chromium=chromium,
                             chromium_code=(
                                 None
                                 if outcome.success

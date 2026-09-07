@@ -127,6 +127,9 @@ def test_default_config_is_dry_run_and_public_reply_off(tmp_path):
     }
     assert defaults["poll_interval_minutes"] == 2
     assert defaults["confidence_threshold"] == 0.85
+    assert defaults["browser_mode"] == "embedded"
+    assert defaults["cdp_url"] == ""
+    assert defaults["cdp_token"] == ""
 
 
 def test_init_plugin_clamps_config_and_requires_authorized_ids(tmp_path, monkeypatch):
@@ -520,6 +523,28 @@ def test_runtime_paths_stay_below_moviepilot_plugin_data_path(tmp_path):
     plugin.stop_service()
 
 
+def test_runtime_binds_external_cdp_browser_configuration(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    plugin.init_plugin(
+        {
+            "enabled": True,
+            "authorized_user_ids": "u1",
+            "browser_mode": "cdp",
+            "cdp_url": "http://cloakbrowser:9050/api/profiles/xhs/cdp",
+            "cdp_token": "cdp-secret",
+        }
+    )
+
+    assert plugin._browser.browser_mode == "cdp"
+    assert plugin._browser.cdp_url == (
+        "http://cloakbrowser:9050/api/profiles/xhs/cdp"
+    )
+    assert plugin._browser.cdp_token == "cdp-secret"
+    assert plugin._cached_status["chromium"] == "EXTERNAL"
+    plugin.stop_service()
+
+
 def test_poll_once_is_non_blocking_and_rejects_reentry(tmp_path):
     plugin = _plugin(tmp_path)
     entered = threading.Event()
@@ -592,14 +617,17 @@ def test_stop_service_uses_bounded_join_and_closes_active_context(tmp_path):
     plugin = _plugin(tmp_path)
     calls = []
     context = SimpleNamespace(close=lambda: calls.append("close"))
-    plugin._browser = SimpleNamespace(_active_context=context)
+    plugin._browser = SimpleNamespace(
+        _active_context=context,
+        close_active_context=lambda: calls.append("manager-close"),
+    )
     worker = _FakeWorker(alive=True, exits_on_join=True)
     plugin._worker = worker
     plugin._enabled = True
 
     plugin.stop_service()
 
-    assert calls == ["close"]
+    assert calls == ["manager-close"]
     assert worker.join_timeouts == [2.0]
     assert plugin.get_state() is False
     assert plugin._worker is None
@@ -780,7 +808,14 @@ def test_form_contains_required_native_vuetify_controls(tmp_path):
 
     assert components.count("VSwitch") == 8
     assert "VSelect" in components
-    assert {"authorized_user_ids", "poll_interval_minutes", "confidence_threshold"} <= models
+    assert {
+        "authorized_user_ids",
+        "browser_mode",
+        "cdp_url",
+        "cdp_token",
+        "poll_interval_minutes",
+        "confidence_threshold",
+    } <= models
     assert {
         "reply_success_enabled",
         "reply_existing_enabled",

@@ -1,0 +1,27 @@
+
+.xhs-movie-config[data-v-37e989a8] {
+  min-width: 0;
+  padding-bottom: 16px;
+}
+.xhs-movie-config__toolbar[data-v-37e989a8],
+.xhs-movie-config__section[data-v-37e989a8],
+.xhs-movie-config__actions[data-v-37e989a8] {
+  padding-inline: 16px;
+}
+.xhs-movie-config__section[data-v-37e989a8] {
+  padding-block: 16px 0;
+}
+.xhs-movie-config__actions[data-v-37e989a8] {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+}
+.xhs-movie-config[data-v-37e989a8] input,
+.xhs-movie-config[data-v-37e989a8] textarea {
+  font-size: 16px;
+}
+.xhs-movie-config[data-v-37e989a8] .v-btn {
+  min-height: 44px;
+  min-width: 44px;
+}

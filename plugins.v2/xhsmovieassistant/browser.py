@@ -18,6 +18,8 @@ _SITE_ORIGINS = {
     "xiaohongshu": "https://www.xiaohongshu.com",
     "rednote": "https://www.rednote.com",
 }
+_BROWSER_MODES = frozenset({"embedded", "cdp"})
+_CDP_CONNECT_TIMEOUT_MS = 10_000
 _QR_SELECTOR = (
     ".login-container .qrcode-img:visible, .qrcode-container img:visible, "
     "[class*='qrcode'] img:visible"
@@ -71,14 +73,25 @@ class BrowserManager:
         site: str,
         proxy: Mapping[str, Any] | None,
         playwright_factory: Callable[[], Any] | None = None,
+        *,
+        browser_mode: str = "embedded",
+        cdp_url: str | None = None,
+        cdp_token: str | None = None,
     ) -> None:
         if site not in _SITE_ORIGINS:
             raise ValueError("unsupported site")
+        if browser_mode not in _BROWSER_MODES:
+            raise ValueError("unsupported browser mode")
+        if browser_mode == "cdp" and not str(cdp_url or "").strip():
+            raise ValueError("CDP URL is required")
         self.data_path = Path(data_path)
         self.profile_path = self.data_path / "browser"
         self.browser_path = self.data_path / "ms-playwright"
         self.base_url = _SITE_ORIGINS[site]
         self.proxy = proxy
+        self.browser_mode = browser_mode
+        self.cdp_url = str(cdp_url or "").strip()
+        self.cdp_token = str(cdp_token or "").strip() or None
         self._playwright_factory = playwright_factory or _default_playwright
         self._active_context: Any = None
 
@@ -87,8 +100,16 @@ class BrowserManager:
         """Return the installed Chromium executable in the plugin-private cache."""
         return _find_chromium_executable(self.browser_path)
 
+    def close_active_context(self) -> None:
+        """Interrupt only a browser context owned by this plugin instance."""
+        context = self._active_context
+        if context is not None and self.browser_mode == "embedded":
+            context.close()
+
     def chromium_status(self) -> OperationResult:
         """Report whether a Chromium executable exists in the private cache."""
+        if self.browser_mode == "cdp":
+            return OperationResult(success=True, data="EXTERNAL")
         executable = self.executable_path
         if executable is None:
             return OperationResult(
@@ -100,6 +121,12 @@ class BrowserManager:
 
     def install_chromium(self) -> OperationResult:
         """Install Playwright Chromium with fixed arguments and a bounded timeout."""
+        if self.browser_mode == "cdp":
+            return OperationResult(
+                success=True,
+                message="External browser does not require Chromium installation",
+                data="EXTERNAL",
+            )
         with _profile_operation():
             return self._install_chromium()
 
@@ -154,23 +181,41 @@ class BrowserManager:
                 self.browser_path.mkdir(parents=True, exist_ok=True)
                 executable = self.executable_path
                 if executable is None:
-                    raise FileNotFoundError("Chromium is not installed")
+                    if self.browser_mode == "embedded":
+                        raise FileNotFoundError("Chromium is not installed")
                 playwright = self._playwright_factory()
                 chromium = playwright.chromium
-                context = chromium.launch_persistent_context(
-                    user_data_dir=self.profile_path,
-                    executable_path=executable,
-                    headless=True,
-                    proxy=self.proxy,
-                    viewport={"width": 1280, "height": 900},
-                    locale="zh-CN",
-                )
+                owns_context = self.browser_mode == "embedded"
+                if owns_context:
+                    context = chromium.launch_persistent_context(
+                        user_data_dir=self.profile_path,
+                        executable_path=executable,
+                        headless=True,
+                        proxy=self.proxy,
+                        viewport={"width": 1280, "height": 900},
+                        locale="zh-CN",
+                    )
+                else:
+                    options: dict[str, Any] = {"timeout": _CDP_CONNECT_TIMEOUT_MS}
+                    if self.cdp_token:
+                        options["headers"] = {
+                            "Authorization": f"Bearer {self.cdp_token}"
+                        }
+                    browser = chromium.connect_over_cdp(self.cdp_url, **options)
+                    if not browser.contexts:
+                        raise RuntimeError("CDP browser has no persistent context")
+                    context = browser.contexts[0]
                 self._active_context = context
-                page = context.pages[0] if context.pages else context.new_page()
+                if owns_context:
+                    page = context.pages[0] if context.pages else context.new_page()
+                else:
+                    page = _matching_page(context.pages, self.base_url)
+                    if page is None:
+                        page = context.new_page()
                 yield page
             finally:
                 try:
-                    if context is not None:
+                    if context is not None and self.browser_mode == "embedded":
                         context.close()
                 finally:
                     self._active_context = None
@@ -384,6 +429,18 @@ def _find_chromium_executable(browser_path: Path) -> Path | None:
         for candidate in sorted(browser_path.glob(pattern), reverse=True):
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate
+    return None
+
+
+def _matching_page(pages: list[Any], base_url: str) -> Any | None:
+    expected_hostname = urlsplit(base_url).hostname or ""
+    for page in pages:
+        try:
+            hostname = urlsplit(str(page.url)).hostname or ""
+        except ValueError:
+            continue
+        if hostname == expected_hostname or hostname.endswith(f".{expected_hostname}"):
+            return page
     return None
 
 

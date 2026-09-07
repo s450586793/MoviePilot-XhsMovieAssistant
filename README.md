@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.1.2-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.1.3-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.1.2` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.1.3` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -37,12 +37,33 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 - `MoviePilot >= 2.15.6`（V2）。
 - NAS 或主机能够访问所选的小红书/RedNote 站点和 GitHub 插件仓库。
 - MoviePilot 已配置可用的 AI 服务；插件直接复用该配置。
-- MoviePilot 容器对插件数据目录有写权限，并具备运行 Playwright Chromium 的
-  系统依赖。
+- 使用内置浏览器时，MoviePilot 容器需要具备运行 Playwright Chromium 的系统依赖。
+- 使用 CloakBrowser/CDP 时，MoviePilot 必须能访问已启动 Profile 的 CDP URL。
 
-这是纯 MoviePilot 插件，**无需额外 Docker 容器**，也不需要配置 MP 地址或
-MP Token。仓库根目录的 `Dockerfile`、`docker-compose.yml` 和 `src/xhs_probe/`
-是早期 Phase 1-3 验证工具，不是插件安装入口。
+这是纯 MoviePilot 插件，插件本身**无需额外 Docker 容器**，也不需要配置 MP 地址
+或 MP Token。CloakBrowser 是可选的外部浏览器；已有实例可以直接复用，没有时仍可
+选择内置 Chromium。仓库根目录的 `Dockerfile`、`docker-compose.yml` 和
+`src/xhs_probe/` 是早期 Phase 1-3 验证工具，不是插件安装入口。
+
+## 浏览器模式
+
+- `内置 Chromium`：默认模式，安装最简单，但 NAS 上的 Headless 浏览器可能被站点
+  导向“安全限制”页面。插件识别到该页面后会立即暂停，不会反复重试。
+- `CloakBrowser / CDP`：推荐用于已部署 CloakBrowser 的 NAS。插件只通过 CDP
+  连接已有可见浏览器，不关闭 Profile，也不接管其生命周期。
+
+使用 CloakBrowser 时，先在 Manager 中创建专用 Profile：关闭 `Headless`、开启
+`Auto launch`，并保持 Profile 正在运行。随后在插件设置中选择
+`CloakBrowser / CDP`，填写 Manager 提供的 `CDP URL` 和 Access Token。建议 URL
+使用 MoviePilot 容器能够访问的 NAS 地址，例如：
+
+```text
+http://NAS-IP:9050/api/profiles/PROFILE-ID/cdp
+```
+
+Access Token 属于敏感凭据，只应保存在 MoviePilot 插件配置中；不要写入仓库、日志、
+Issue 或截图。CB Profile 必须专用于助手账号，因为“退出登录”会清除该 Profile 中的
+站点会话。
 
 ## 安装
 
@@ -54,8 +75,9 @@ MP Token。仓库根目录的 `Dockerfile`、`docker-compose.yml` 和 `src/xhs_p
    ```
 
 3. 刷新插件市场，搜索“小红书影视助手”，点击安装。
-4. 打开插件详情页，点击“安装 Chromium”。安装是后台任务，完成前不要生成登录
-   二维码或启用轮询；通常不需要重启 DSM。
+4. 若使用默认模式，打开插件详情页并点击“安装 Chromium”。安装是后台任务，完成前
+   不要生成登录二维码或启用轮询；通常不需要重启 DSM。使用 CloakBrowser/CDP 时
+   不需要执行该安装。
 
 MoviePilot V2 读取该仓库 `main` 分支的 `package.v2.json`，插件更新发布后只需
 刷新插件市场并执行更新。若 NAS 无法访问 GitHub，请先配置 MoviePilot 的 GitHub
@@ -67,8 +89,9 @@ MoviePilot V2 读取该仓库 `main` 分支的 `package.v2.json`，插件更新�
 2. 填写允许发起请求的稳定“授权用户 ID”。可以从主账号网页版个人主页 URL，或
    一次已确认的 `@` 通知请求中核对该 ID；不要使用昵称、展示名或可变短 ID。
    多个 ID 可用英文逗号或换行分隔。
-3. 选择助手小号实际使用的站点。点击“生成登录二维码”，用专门的小红书助手
-   账号扫码；若登录页自动跳转国际站，选择 `RedNote` 后重新生成二维码。
+3. 选择浏览器模式和助手小号实际使用的站点。使用 CloakBrowser/CDP 时先填写并保存
+   CDP URL 与 Access Token，再点击“生成登录二维码”。用专门的小红书助手账号扫码；
+   若登录页自动跳转国际站，选择 `RedNote` 后重新生成二维码。
 4. 扫码完成后刷新插件页：Chromium 应显示 `AVAILABLE`，浏览器应为 `READY`，
    登录状态应不再是 `WAITING_FOR_SCAN`。然后保存设置。
 5. 先点击“测试 AI”“测试 MoviePilot”和“测试通知”，分别确认现有 MP 能力正常。
@@ -120,7 +143,9 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 | 现象 | 处理 |
 | --- | --- |
 | 出现 `300012`、验证码或站点风险控制 | 停止高频重试，在浏览器页面人工完成验证；验证完成后点击“恢复轮询”。 |
+| 二维码返回 `XHS_RISK_CONTROL` 或出现“安全限制” | 不要反复生成二维码；切换到专用的可见 CloakBrowser/CDP Profile，人工完成验证。 |
 | 登录过期、`LOGGED_OUT` 或 `LOGIN_REQUIRED` | 生成新的二维码完成扫码；如账号跳转国际站，确认站点仍选择 `RedNote`。 |
+| CloakBrowser/CDP 连接失败 | 确认 Profile 正在运行、CDP URL 可从 MoviePilot 容器访问，并重新填写正确的 Access Token。 |
 | Chromium 安装失败或缺少系统库 | 按 MoviePilot 部署镜像/宿主机的 Chromium 依赖说明补齐库后，重新点击“安装 Chromium”。不要把浏览器依赖写入插件配置。 |
 | AI 测试失败或 AI 未启用 | 先在 MoviePilot 系统设置中配置并启用 AI，再使用插件的“测试 AI”确认；插件不保存模型凭据。 |
 | `NEED_CONFIRMATION` 或歧义结果 | 使用“人工确认”指定唯一影片/剧集，或选择“忽略”；不要仅凭相近标题开启真实订阅。 |
@@ -163,8 +188,8 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.1.2` 发布验证结果为：Python `419 passed`、覆盖率 `89.09%`、Vue/Vitest
-`12 passed`、MoviePilot `v2.15.6` 隔离 import/route smoke 通过。该 smoke 不调用
+当前 `v0.1.3` 发布验证结果为：Python `424 passed`、覆盖率 `88.93%`、Vue/Vitest
+`14 passed`、MoviePilot `v2.15.6` 隔离 import/route smoke 通过。该 smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 
 ## 实现证据

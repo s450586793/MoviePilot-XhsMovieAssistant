@@ -87,6 +87,18 @@ describe('Page manual resolution', () => {
     expect(statusText).toContain('BROWSER_UNAVAILABLE')
   })
 
+  it('hides the private Chromium installer for an external CDP browser', async () => {
+    const { wrapper } = await mountPage({
+      status: {
+        browser_mode: 'CDP',
+        chromium: 'EXTERNAL',
+      },
+    })
+
+    expect(wrapper.text()).toContain('浏览器模式CDP')
+    expect(wrapper.findAll('button').some(button => button.text() === '安装 Chromium')).toBe(false)
+  })
+
   it('rejects an unknown media type until the operator explicitly selects movie or tv', async () => {
     const { api, wrapper } = await mountPage({ row: request({ media_type: 'unknown' }) })
 

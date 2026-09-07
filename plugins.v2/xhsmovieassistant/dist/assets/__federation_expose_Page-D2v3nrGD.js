@@ -248,11 +248,15 @@ return (_ctx, _cache) => {
           _createElementVNode("dd", null, _toDisplayString(status.value.activity || 'IDLE'), 1)
         ]),
         _createElementVNode("div", null, [
-          _cache[11] || (_cache[11] = _createElementVNode("dt", null, "浏览器", -1)),
+          _cache[11] || (_cache[11] = _createElementVNode("dt", null, "浏览器模式", -1)),
+          _createElementVNode("dd", null, _toDisplayString(status.value.browser_mode || 'EMBEDDED'), 1)
+        ]),
+        _createElementVNode("div", null, [
+          _cache[12] || (_cache[12] = _createElementVNode("dt", null, "浏览器", -1)),
           _createElementVNode("dd", null, _toDisplayString(status.value.browser || 'UNKNOWN'), 1)
         ]),
         _createElementVNode("div", null, [
-          _cache[12] || (_cache[12] = _createElementVNode("dt", null, "Chromium", -1)),
+          _cache[13] || (_cache[13] = _createElementVNode("dt", null, "Chromium", -1)),
           _createElementVNode("dd", null, [
             _createTextVNode(_toDisplayString(status.value.chromium || 'UNKNOWN'), 1),
             (status.value.chromium_code)
@@ -261,11 +265,11 @@ return (_ctx, _cache) => {
           ])
         ]),
         _createElementVNode("div", null, [
-          _cache[13] || (_cache[13] = _createElementVNode("dt", null, "登录", -1)),
+          _cache[14] || (_cache[14] = _createElementVNode("dt", null, "登录", -1)),
           _createElementVNode("dd", null, _toDisplayString(status.value.login || 'UNKNOWN'), 1)
         ]),
         _createElementVNode("div", null, [
-          _cache[14] || (_cache[14] = _createElementVNode("dt", null, "暂停原因", -1)),
+          _cache[15] || (_cache[15] = _createElementVNode("dt", null, "暂停原因", -1)),
           _createElementVNode("dd", null, _toDisplayString(status.value.pause_code || '无'), 1)
         ])
       ]),
@@ -282,28 +286,31 @@ return (_ctx, _cache) => {
         : _createCommentVNode("", true)
     ]),
     _createElementVNode("section", _hoisted_5, [
-      _cache[23] || (_cache[23] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
+      _cache[24] || (_cache[24] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
         _createElementVNode("h2", { id: "management-actions" }, "管理与诊断")
       ], -1)),
       _createElementVNode("div", _hoisted_6, [
-        _createVNode(_component_VBtn, {
-          "prepend-icon": "mdi-download",
-          variant: "outlined",
-          loading: actionKey.value === 'plugin/XhsMovieAssistant/chromium/install',
-          onClick: _cache[1] || (_cache[1] = $event => (runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')))
-        }, {
-          default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
-            _createTextVNode("安装 Chromium", -1)
-          ]))]),
-          _: 1
-        }, 8, ["loading"]),
+        (status.value.browser_mode !== 'CDP')
+          ? (_openBlock(), _createBlock(_component_VBtn, {
+              key: 0,
+              "prepend-icon": "mdi-download",
+              variant: "outlined",
+              loading: actionKey.value === 'plugin/XhsMovieAssistant/chromium/install',
+              onClick: _cache[1] || (_cache[1] = $event => (runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')))
+            }, {
+              default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
+                _createTextVNode("安装 Chromium", -1)
+              ]))]),
+              _: 1
+            }, 8, ["loading"]))
+          : _createCommentVNode("", true),
         _createVNode(_component_VBtn, {
           "prepend-icon": "mdi-qrcode-scan",
           variant: "outlined",
           loading: actionKey.value === 'plugin/XhsMovieAssistant/login/start',
           onClick: _cache[2] || (_cache[2] = $event => (runAction('plugin/XhsMovieAssistant/login/start', '登录二维码生成')))
         }, {
-          default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
+          default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
             _createTextVNode("生成登录二维码", -1)
           ]))]),
           _: 1
@@ -314,7 +321,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/poll',
           onClick: _cache[3] || (_cache[3] = $event => (runAction('plugin/XhsMovieAssistant/poll', '立即轮询')))
         }, {
-          default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
+          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
             _createTextVNode("立即轮询", -1)
           ]))]),
           _: 1
@@ -325,7 +332,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/resume',
           onClick: _cache[4] || (_cache[4] = $event => (runAction('plugin/XhsMovieAssistant/resume', '恢复轮询')))
         }, {
-          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+          default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
             _createTextVNode("恢复轮询", -1)
           ]))]),
           _: 1
@@ -336,7 +343,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/logout',
           onClick: _cache[5] || (_cache[5] = $event => (runAction('plugin/XhsMovieAssistant/logout', '退出登录')))
         }, {
-          default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+          default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
             _createTextVNode("退出登录", -1)
           ]))]),
           _: 1
@@ -347,7 +354,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/ai',
           onClick: _cache[6] || (_cache[6] = $event => (runAction('plugin/XhsMovieAssistant/test/ai', 'AI 测试', { title: '星际穿越' })))
         }, {
-          default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+          default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
             _createTextVNode("测试 AI", -1)
           ]))]),
           _: 1
@@ -358,7 +365,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/moviepilot',
           onClick: _cache[7] || (_cache[7] = $event => (runAction('plugin/XhsMovieAssistant/test/moviepilot', 'MoviePilot 测试', { title: '星际穿越', media_type: 'movie' })))
         }, {
-          default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
+          default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
             _createTextVNode("测试 MoviePilot", -1)
           ]))]),
           _: 1
@@ -369,7 +376,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/notification',
           onClick: _cache[8] || (_cache[8] = $event => (runAction('plugin/XhsMovieAssistant/test/notification', '通知测试')))
         }, {
-          default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
+          default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
             _createTextVNode("测试通知", -1)
           ]))]),
           _: 1
@@ -378,7 +385,7 @@ return (_ctx, _cache) => {
     ]),
     _createElementVNode("section", _hoisted_7, [
       _createElementVNode("div", _hoisted_8, [
-        _cache[24] || (_cache[24] = _createElementVNode("h2", { id: "recent-requests" }, "最近请求", -1)),
+        _cache[25] || (_cache[25] = _createElementVNode("h2", { id: "recent-requests" }, "最近请求", -1)),
         _createElementVNode("span", null, _toDisplayString(requests.value.length) + " 项", 1)
       ]),
       (loading.value)
@@ -415,19 +422,19 @@ return (_ctx, _cache) => {
           ]),
           _createElementVNode("dl", _hoisted_12, [
             _createElementVNode("div", null, [
-              _cache[25] || (_cache[25] = _createElementVNode("dt", null, "匹配", -1)),
+              _cache[26] || (_cache[26] = _createElementVNode("dt", null, "匹配", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.match), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[26] || (_cache[26] = _createElementVNode("dt", null, "回复", -1)),
+              _cache[27] || (_cache[27] = _createElementVNode("dt", null, "回复", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.reply), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[27] || (_cache[27] = _createElementVNode("dt", null, "错误", -1)),
+              _cache[28] || (_cache[28] = _createElementVNode("dt", null, "错误", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.error), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[28] || (_cache[28] = _createElementVNode("dt", null, "更新", -1)),
+              _cache[29] || (_cache[29] = _createElementVNode("dt", null, "更新", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.updated_at), 1)
             ])
           ]),
@@ -492,7 +499,7 @@ return (_ctx, _cache) => {
                   loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/manual`,
                   onClick: $event => (submitManual(row))
                 }, {
-                  default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
+                  default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
                     _createTextVNode("人工确认", -1)
                   ]))]),
                   _: 1
@@ -507,6 +514,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f44fe6fc"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-81a8d770"]]);
 
 export { Page as default };

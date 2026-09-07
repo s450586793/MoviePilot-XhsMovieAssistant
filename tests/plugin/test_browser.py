@@ -104,6 +104,20 @@ class FakeContext:
         self.runtime.cookies_cleared = True
 
 
+class FakeExternalContext:
+    def __init__(self, pages):
+        self.pages = pages
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeBrowser:
+    def __init__(self, contexts):
+        self.contexts = contexts
+
+
 class FakeChromium:
     def __init__(self, runtime):
         self.runtime = runtime
@@ -114,6 +128,10 @@ class FakeChromium:
         self.runtime.context = FakeContext(self.runtime)
         return self.runtime.context
 
+    def connect_over_cdp(self, endpoint_url: str, **kwargs) -> FakeBrowser:
+        self.runtime.cdp_connect_args = (endpoint_url, kwargs)
+        return self.runtime.cdp_browser
+
 
 class FakePlaywright:
     def __init__(self, executable_path: Path):
@@ -122,6 +140,8 @@ class FakePlaywright:
         self.chromium = FakeChromium(self)
         self.launch_args = None
         self.context = None
+        self.cdp_browser = None
+        self.cdp_connect_args = None
         self.context_closed = False
         self.cookies_cleared = False
         self.stopped = False
@@ -200,6 +220,90 @@ def test_session_uses_persistent_profile_proxy_and_expected_options(
     assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "parent-owned-cache"
     assert fake_playwright.context_closed is True
     assert fake_playwright.stopped is True
+
+
+def test_cdp_session_reuses_matching_context_without_closing_it(
+    tmp_path, fake_playwright
+) -> None:
+    unrelated = FakePage()
+    unrelated.url = "https://example.com"
+    xhs_page = FakePage()
+    xhs_page.url = "https://www.xiaohongshu.com/notification"
+    context = FakeExternalContext([unrelated, xhs_page])
+    fake_playwright.cdp_browser = FakeBrowser([context])
+    browser = BrowserManager(
+        tmp_path,
+        site="xiaohongshu",
+        proxy=None,
+        playwright_factory=lambda: fake_playwright,
+        browser_mode="cdp",
+        cdp_url="http://cloakbrowser:9050/api/profiles/xhs/cdp",
+        cdp_token="cdp-secret",
+    )
+
+    with browser.session() as page:
+        assert page is xhs_page
+
+    assert fake_playwright.cdp_connect_args == (
+        "http://cloakbrowser:9050/api/profiles/xhs/cdp",
+        {
+            "timeout": 10_000,
+            "headers": {"Authorization": "Bearer cdp-secret"},
+        },
+    )
+    assert fake_playwright.launch_args is None
+    assert context.closed is False
+    assert fake_playwright.stopped is True
+
+
+def test_cdp_mode_does_not_require_or_install_private_chromium(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = FakePlaywright(tmp_path / "missing-chromium")
+    page = FakePage()
+    runtime.cdp_browser = FakeBrowser([FakeExternalContext([page])])
+    browser = BrowserManager(
+        tmp_path,
+        site="xiaohongshu",
+        proxy=None,
+        playwright_factory=lambda: runtime,
+        browser_mode="cdp",
+        cdp_url="http://cloakbrowser:9050/api/profiles/xhs/cdp",
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("installer ran")),
+    )
+
+    assert browser.chromium_status() == OperationResult(success=True, data="EXTERNAL")
+    assert browser.install_chromium() == OperationResult(
+        success=True,
+        message="External browser does not require Chromium installation",
+        data="EXTERNAL",
+    )
+    with browser.session() as selected:
+        assert selected is page
+
+
+def test_close_active_context_never_closes_external_cdp_context(
+    tmp_path, fake_playwright
+) -> None:
+    context = FakeExternalContext([FakePage()])
+    fake_playwright.cdp_browser = FakeBrowser([context])
+    browser = BrowserManager(
+        tmp_path,
+        site="xiaohongshu",
+        proxy=None,
+        playwright_factory=lambda: fake_playwright,
+        browser_mode="cdp",
+        cdp_url="http://cloakbrowser:9050/api/profiles/xhs/cdp",
+    )
+
+    with browser.session():
+        browser.close_active_context()
+
+    assert context.closed is False
 
 
 def test_session_closes_context_and_playwright_and_releases_lock_after_exception(
