@@ -743,7 +743,10 @@ def test_note_pause_fails_current_request_and_stops_the_batch(tmp_path: Path) ->
     assert resolver.calls == 0
     assert [request.mention_id for request in repository.recent(10)] == ["m1"]
     assert repository.get_runtime_state().pause_code == "RATE_LIMITED"
-    assert len(notifications) == 1
+    assert notifications == [
+        ("小红书监听已暂停", "暂停原因：RATE_LIMITED"),
+        ("小红书影视助手", "请求 1 处理结果：FAILED"),
+    ]
 
 
 def test_three_consecutive_contract_failures_pause_but_success_resets_count(
@@ -933,6 +936,69 @@ def test_notification_failure_does_not_change_committed_result(tmp_path: Path) -
     assert repository.recent(1)[0].status is RequestStatus.DRY_RUN_MATCHED
 
 
+def test_cancellation_after_terminal_commit_leaves_result_outbox_durable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cancelled = Event()
+    service, repository, xhs, _, _, _ = build_service(
+        tmp_path / "assistant.db", is_cancelled=cancelled.is_set
+    )
+    original_transition = repository.transition
+
+    def cancel_after_terminal_transition(request_id: int, target: RequestStatus, **kwargs):
+        stored = original_transition(request_id, target, **kwargs)
+        if target is RequestStatus.DRY_RUN_MATCHED:
+            cancelled.set()
+        return stored
+
+    monkeypatch.setattr(repository, "transition", cancel_after_terminal_transition)
+    xhs.mentions = [mention()]
+
+    assert service.poll_once()[0].status is RequestStatus.DRY_RUN_MATCHED
+    assert repository.recent(1)[0].status is RequestStatus.DRY_RUN_MATCHED
+    pending = repository.pending_notifications()
+    assert [(event.kind, event.code) for event in pending] == [
+        ("REQUEST_RESULT", "DRY_RUN_MATCHED")
+    ]
+
+
+def test_pause_event_is_delivered_after_disabled_business_backlog(tmp_path: Path) -> None:
+    deliveries: list[tuple[str, str]] = []
+    service, repository, _, _, _, _ = build_service(
+        tmp_path / "assistant.db",
+        notifications_enabled=False,
+        notify=lambda title, text: deliveries.append((title, text)),
+    )
+    saved = repository.save_mention(
+        NewMention(
+            note_id="note-backlog",
+            note_url="https://www.xiaohongshu.com/explore/note-backlog",
+            mention_id="mention-backlog",
+            sender_user_id="authorized-user",
+            comment_id="comment-backlog",
+            comment_text="想看",
+            created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        )
+    )
+    for attempt in range(21):
+        repository.enqueue_notification(
+            "REQUEST_RESULT",
+            request_id=saved.request.id,
+            code="DRY_RUN_MATCHED",
+            dedupe_key=f"business-backlog:{attempt}",
+        )
+    repository.enqueue_notification(
+        "PAUSE",
+        request_id=None,
+        code="AUTH_REQUIRED",
+        dedupe_key="pause-after-backlog",
+    )
+
+    service.poll_once()
+
+    assert deliveries == [("小红书监听已暂停", "暂停原因：AUTH_REQUIRED")]
+
+
 def test_terminal_notification_failure_retries_after_restart_once(
     tmp_path: Path,
 ) -> None:
@@ -1035,14 +1101,21 @@ def test_business_notification_disablement_leaves_no_pending_result_event(
     tmp_path: Path,
 ) -> None:
     attempts: list[tuple[str, str]] = []
-    service, repository, xhs, _, _, _ = build_service(
+    service, repository, xhs, _, moviepilot, _ = build_service(
         tmp_path / "assistant.db",
         notify=lambda title, text: attempts.append((title, text)),
         notifications_enabled=False,
+        enable_subscription=True,
+        replies_enabled=True,
     )
     xhs.mentions = [mention()]
+    xhs.reply_outcomes = [ReplyOutcome(success=False, code="TEMPORARY_FAILURE")]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
 
-    assert service.poll_once()[0].status is RequestStatus.DRY_RUN_MATCHED
+    assert service.poll_once()[0].status is RequestStatus.SUBSCRIBED
+    assert repository.recent(1)[0].reply_status is ReplyStatus.FAILED
 
     assert attempts == []
     assert repository.pending_notifications(20) == []

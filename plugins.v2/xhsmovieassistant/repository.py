@@ -80,6 +80,18 @@ NOTIFICATION_KINDS = frozenset({"REQUEST_RESULT", "REPLY_FAILURE", "PAUSE"})
 SAFE_NOTIFICATION_CODES = SAFE_PERSISTED_CODES | frozenset(
     status.value for status in RequestStatus
 ) | {"REPLY_FAILED"}
+TERMINAL_REQUEST_STATUSES = frozenset(
+    {
+        RequestStatus.IGNORED,
+        RequestStatus.NEED_CONFIRMATION,
+        RequestStatus.NOT_MEDIA,
+        RequestStatus.DRY_RUN_MATCHED,
+        RequestStatus.ALREADY_IN_LIBRARY,
+        RequestStatus.ALREADY_SUBSCRIBED,
+        RequestStatus.SUBSCRIBED,
+        RequestStatus.FAILED,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -263,6 +275,7 @@ class RequestRepository:
         resolution: Resolution | None = None,
         match: MediaMatch | None = None,
         subscription_id: str | None = None,
+        business_notifications_enabled: bool = False,
         now: datetime | None = None,
     ) -> StoredRequest:
         """Advance one request through the explicit forward-only state machine."""
@@ -274,7 +287,10 @@ class RequestRepository:
             raise TypeError("resolution must be a Resolution")
         if match is not None and not isinstance(match, MediaMatch):
             raise TypeError("match must be a MediaMatch")
-        timestamp = _format_datetime(now or _utc_now())
+        if not isinstance(business_notifications_enabled, bool):
+            raise TypeError("business_notifications_enabled must be a bool")
+        event_time = now or _utc_now()
+        timestamp = _format_datetime(event_time)
         with self._connect() as connection:
             row = _require_row(connection, request_id)
             current = RequestStatus(row["status"])
@@ -299,6 +315,15 @@ class RequestRepository:
                     f"Cannot transition {RequestStatus(raced['status']).value} to {target.value}"
                 )
             updated = _require_row(connection, request_id)
+            if business_notifications_enabled and target in TERMINAL_REQUEST_STATUSES:
+                _enqueue_notification(
+                    connection,
+                    "REQUEST_RESULT",
+                    request_id=request_id,
+                    code=target.value,
+                    dedupe_key=f"REQUEST_RESULT:{request_id}:{updated['attempt_count']}",
+                    now=event_time,
+                )
         return _request_from_row(updated)
 
     def requeue(
@@ -361,6 +386,7 @@ class RequestRepository:
         reply_id: str | None = None,
         *,
         status: ReplyStatus = ReplyStatus.SENT,
+        business_notifications_enabled: bool = False,
         now: datetime | None = None,
     ) -> StoredRequest:
         """Atomically record one reply delivery outcome from the pending state."""
@@ -374,6 +400,8 @@ class RequestRepository:
             raise ValueError("reply_id must be a non-empty string when reply is sent")
         if status is ReplyStatus.FAILED and reply_id is not None:
             raise ValueError("reply_id must be omitted when reply failed")
+        if not isinstance(business_notifications_enabled, bool):
+            raise TypeError("business_notifications_enabled must be a bool")
         with self._connect() as connection:
             row = _require_row(connection, request_id)
             current = ReplyStatus(row["reply_status"])
@@ -383,7 +411,8 @@ class RequestRepository:
                 raise InvalidTransition("Reply delivery is already final")
             if current is ReplyStatus.FAILED:
                 raise InvalidTransition("Reply delivery is already final")
-            timestamp = _format_datetime(now or _utc_now())
+            event_time = now or _utc_now()
+            timestamp = _format_datetime(event_time)
             values = {
                 "reply_status": status.value,
                 "reply_id": reply_id,
@@ -400,6 +429,15 @@ class RequestRepository:
                     return _request_from_row(raced)
                 raise InvalidTransition("Reply delivery was recorded concurrently")
             updated = _require_row(connection, request_id)
+            if business_notifications_enabled and status is ReplyStatus.FAILED:
+                _enqueue_notification(
+                    connection,
+                    "REPLY_FAILURE",
+                    request_id=request_id,
+                    code="REPLY_FAILED",
+                    dedupe_key=f"REPLY_FAILURE:{request_id}:{updated['attempt_count']}",
+                    now=event_time,
+                )
         return _request_from_row(updated)
 
     def get_runtime_state(self) -> RuntimeState:
@@ -468,53 +506,33 @@ class RequestRepository:
             raise ValueError("dedupe_key must be a non-empty string")
         timestamp = now or _utc_now()
         _require_aware_datetime(timestamp, "now")
-        safe_code = _safe_notification_code(code)
-        stored_key = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
         with self._connect() as connection:
-            if request_id is not None:
-                _require_row(connection, request_id)
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO notification_outbox (
-                    kind, request_id, code, dedupe_key, created_at, attempt_count
-                ) VALUES (?, ?, ?, ?, ?, 0)
-                """,
-                (
-                    kind,
-                    request_id,
-                    safe_code,
-                    stored_key,
-                    _format_datetime(timestamp),
-                ),
+            event = _enqueue_notification(
+                connection,
+                kind,
+                request_id=request_id,
+                code=code,
+                dedupe_key=dedupe_key,
+                now=timestamp,
             )
-            row = connection.execute(
-                "SELECT * FROM notification_outbox WHERE dedupe_key = ?",
-                (stored_key,),
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("Notification event could not be read back")
-        if (
-            row["kind"] != kind
-            or row["request_id"] != request_id
-            or row["code"] != safe_code
-        ):
-            raise IdempotencyConflict(
-                "notification dedupe key identifies a different event"
-            )
-        return _notification_from_row(row)
+        return event
 
-    def pending_notifications(self, limit: int = 20) -> list[OutboxNotification]:
-        """Return undelivered notification metadata in insertion order."""
+    def pending_notifications(
+        self, limit: int = 20, *, business_enabled: bool = True
+    ) -> list[OutboxNotification]:
+        """Return undelivered metadata with safety events before business events."""
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError("limit must be a positive integer")
+        if not isinstance(business_enabled, bool):
+            raise TypeError("business_enabled must be a bool")
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM notification_outbox
-                WHERE delivered_at IS NULL
-                ORDER BY id ASC LIMIT ?
+                WHERE delivered_at IS NULL AND (? OR kind = 'PAUSE')
+                ORDER BY CASE kind WHEN 'PAUSE' THEN 0 ELSE 1 END, id ASC LIMIT ?
                 """,
-                (limit,),
+                (business_enabled, limit),
             ).fetchall()
         return [_notification_from_row(row) for row in rows]
 
@@ -810,6 +828,55 @@ def _require_notification_row(
     if row is None:
         raise RequestNotFound(f"Notification {notification_id} was not found")
     return row
+
+
+def _enqueue_notification(
+    connection: sqlite3.Connection,
+    kind: str,
+    *,
+    request_id: int | None,
+    code: str,
+    dedupe_key: str,
+    now: datetime,
+) -> OutboxNotification:
+    """Insert one metadata-only event using the caller's active transaction."""
+    if kind not in NOTIFICATION_KINDS:
+        raise ValueError("unsupported notification kind")
+    if request_id is not None and (
+        isinstance(request_id, bool) or not isinstance(request_id, int) or request_id < 1
+    ):
+        raise ValueError("request_id must be a positive integer or None")
+    if kind == "PAUSE" and request_id is not None:
+        raise ValueError("pause notifications cannot reference a request")
+    if kind != "PAUSE" and request_id is None:
+        raise ValueError("request notification requires request_id")
+    if not isinstance(dedupe_key, str) or not dedupe_key:
+        raise ValueError("dedupe_key must be a non-empty string")
+    _require_aware_datetime(now, "now")
+    safe_code = _safe_notification_code(code)
+    stored_key = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
+    if request_id is not None:
+        _require_row(connection, request_id)
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO notification_outbox (
+            kind, request_id, code, dedupe_key, created_at, attempt_count
+        ) VALUES (?, ?, ?, ?, ?, 0)
+        """,
+        (kind, request_id, safe_code, stored_key, _format_datetime(now)),
+    )
+    row = connection.execute(
+        "SELECT * FROM notification_outbox WHERE dedupe_key = ?", (stored_key,)
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Notification event could not be read back")
+    if (
+        row["kind"] != kind
+        or row["request_id"] != request_id
+        or row["code"] != safe_code
+    ):
+        raise IdempotencyConflict("notification dedupe key identifies a different event")
+    return _notification_from_row(row)
 
 
 def _validate_mention(mention: NewMention) -> None:

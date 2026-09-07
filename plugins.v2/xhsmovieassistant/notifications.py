@@ -53,7 +53,7 @@ def flush_notification_outbox(
     if notify is None:
         return
     try:
-        pending = repository.pending_notifications(20)
+        pending = repository.pending_notifications(20, business_enabled=business_enabled)
     except Exception:
         return
     for event in pending:

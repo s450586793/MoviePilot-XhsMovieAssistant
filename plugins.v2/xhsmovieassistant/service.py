@@ -191,7 +191,7 @@ class AssistantService:
             stored = self.repository.requeue(request_id, authenticated=True)
         if stored.status is not RequestStatus.NEW:
             raise InvalidTransition(f"Cannot ignore {stored.status.value}")
-        return self.repository.transition(request_id, RequestStatus.IGNORED)
+        return self._transition(request_id, RequestStatus.IGNORED)
 
     def manual_resolve(
         self, request_id: int, resolution: Resolution
@@ -205,12 +205,12 @@ class AssistantService:
             stored = self.repository.requeue(request_id, authenticated=True)
         if stored.status is not RequestStatus.NEW:
             raise InvalidTransition(f"Cannot manually resolve {stored.status.value}")
-        self.repository.transition(
+        self._transition(
             request_id,
             RequestStatus.FETCHED,
             note=stored.note,
         )
-        self.repository.transition(request_id, RequestStatus.RESOLVING)
+        self._transition(request_id, RequestStatus.RESOLVING)
         return self._process_resolution(
             request_id,
             None,
@@ -258,12 +258,12 @@ class AssistantService:
         media_request: MediaRequest,
         mention: TransientMention | None,
     ) -> ProcessingResult:
-        self.repository.transition(
+        self._transition(
             request_id,
             RequestStatus.FETCHED,
             note=media_request.note,
         )
-        self.repository.transition(request_id, RequestStatus.RESOLVING)
+        self._transition(request_id, RequestStatus.RESOLVING)
         try:
             self._ensure_active(request_id)
             resolution = self.resolver.resolve(media_request)
@@ -311,7 +311,7 @@ class AssistantService:
                 request_id, mention, RequestStatus.NEED_CONFIRMATION, resolution
             )
 
-        self.repository.transition(
+        self._transition(
             request_id,
             RequestStatus.MATCHED,
             resolution=resolution,
@@ -340,7 +340,7 @@ class AssistantService:
             transition_values["error"] = "UPSTREAM_ERROR"
         if outcome.subscription_id is not None:
             transition_values["subscription_id"] = outcome.subscription_id
-        self.repository.transition(request_id, outcome.status, **transition_values)
+        self._transition(request_id, outcome.status, **transition_values)
         return self._complete(
             request_id,
             mention,
@@ -359,7 +359,7 @@ class AssistantService:
         status: RequestStatus,
         resolution: Resolution,
     ) -> ProcessingResult:
-        self.repository.transition(request_id, status, resolution=resolution)
+        self._transition(request_id, status, resolution=resolution)
         return self._complete(
             request_id,
             mention,
@@ -367,7 +367,7 @@ class AssistantService:
         )
 
     def _fail(self, request_id: int, code: str) -> ProcessingResult:
-        self.repository.transition(request_id, RequestStatus.FAILED, error=code)
+        self._transition(request_id, RequestStatus.FAILED, error=code)
         return ProcessingResult(status=RequestStatus.FAILED, message=code)
 
     def _complete(
@@ -378,11 +378,6 @@ class AssistantService:
     ) -> ProcessingResult:
         if self._is_cancelled():
             return result
-        self._enqueue_business_notification(
-            "REQUEST_RESULT",
-            request_id,
-            result.status.value,
-        )
         if mention is not None:
             self._reply(request_id, mention, result)
         self._flush_notifications()
@@ -409,13 +404,18 @@ class AssistantService:
         except _ServiceCancelled:
             return
         except XhsPausedError as error:
-            self.repository.mark_reply(request_id, status=ReplyStatus.FAILED)
+            self.repository.mark_reply(
+                request_id,
+                status=ReplyStatus.FAILED,
+                business_notifications_enabled=self.notifications_enabled,
+            )
             self._pause(error.code)
             return
         except Exception:
-            self.repository.mark_reply(request_id, status=ReplyStatus.FAILED)
-            self._enqueue_business_notification(
-                "REPLY_FAILURE", request_id, "REPLY_FAILED"
+            self.repository.mark_reply(
+                request_id,
+                status=ReplyStatus.FAILED,
+                business_notifications_enabled=self.notifications_enabled,
             )
             return
 
@@ -426,33 +426,27 @@ class AssistantService:
         ):
             self.repository.mark_reply(request_id, outcome.reply_id.strip())
             return
-        self.repository.mark_reply(request_id, status=ReplyStatus.FAILED)
+        self.repository.mark_reply(
+            request_id,
+            status=ReplyStatus.FAILED,
+            business_notifications_enabled=self.notifications_enabled,
+        )
         if outcome.code in _REPLY_PAUSE_CODES:
             self._pause(outcome.code)
-        else:
-            self._enqueue_business_notification(
-                "REPLY_FAILURE", request_id, "REPLY_FAILED"
-            )
 
     def _pause(self, code: str) -> None:
         enqueue_pause_notification(self.repository, code)
         self._flush_notifications()
 
-    def _enqueue_business_notification(
-        self, kind: str, request_id: int, code: str
-    ) -> None:
-        if not self.notifications_enabled:
-            return
-        try:
-            stored = self._require_request(request_id)
-            self.repository.enqueue_notification(
-                kind,
-                request_id=request_id,
-                code=code,
-                dedupe_key=f"{kind}:{request_id}:{stored.attempt_count}",
-            )
-        except Exception:
-            return
+    def _transition(
+        self, request_id: int, target: RequestStatus, **kwargs: Any
+    ) -> StoredRequest:
+        return self.repository.transition(
+            request_id,
+            target,
+            business_notifications_enabled=self.notifications_enabled,
+            **kwargs,
+        )
 
     def _flush_notifications(self) -> None:
         flush_notification_outbox(

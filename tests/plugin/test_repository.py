@@ -382,6 +382,63 @@ def test_notification_outbox_retries_then_marks_delivery_once(tmp_path) -> None:
     assert repo.pending_notifications(20) == []
 
 
+def test_terminal_transition_rolls_back_when_atomic_result_outbox_insert_fails(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "app.db"
+    repo = RequestRepository(database_path)
+    saved = repo.save_mention(make_mention())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_result_outbox_insert
+            BEFORE INSERT ON notification_outbox
+            WHEN NEW.kind = 'REQUEST_RESULT'
+            BEGIN
+                SELECT RAISE(ABORT, 'result outbox unavailable');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="result outbox unavailable"):
+        repo.transition(
+            saved.request.id,
+            RequestStatus.FAILED,
+            error="UPSTREAM_ERROR",
+            business_notifications_enabled=True,
+        )
+
+    assert repo.get(saved.request.id).status is RequestStatus.NEW  # type: ignore[union-attr]
+    assert repo.pending_notifications() == []
+
+
+def test_reply_failure_rolls_back_when_atomic_outbox_insert_fails(tmp_path) -> None:
+    database_path = tmp_path / "app.db"
+    repo = RequestRepository(database_path)
+    saved = repo.save_mention(make_mention())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_reply_outbox_insert
+            BEFORE INSERT ON notification_outbox
+            WHEN NEW.kind = 'REPLY_FAILURE'
+            BEGIN
+                SELECT RAISE(ABORT, 'reply outbox unavailable');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="reply outbox unavailable"):
+        repo.mark_reply(
+            saved.request.id,
+            status=ReplyStatus.FAILED,
+            business_notifications_enabled=True,
+        )
+
+    assert repo.get(saved.request.id).reply_status is ReplyStatus.PENDING  # type: ignore[union-attr]
+    assert repo.pending_notifications() == []
+
+
 def test_initialization_migrates_legacy_schema_and_configures_private_wal_database(tmp_path) -> None:
     database_path = tmp_path / "legacy.db"
     with sqlite3.connect(database_path) as connection:
