@@ -91,6 +91,8 @@ class FakePage:
         self.evaluate_calls.append(expression)
         if "__INITIAL_STATE__" in expression:
             return self.initial_logged_in
+        if "document.body?.innerText" in expression:
+            return self.text
         return None
 
     def locator(self, selector: str) -> FakeLocator:
@@ -890,9 +892,9 @@ def test_logout_clears_only_persistent_context_storage(manager, fake_playwright)
 
     assert result.success is True
     assert fake_playwright.cookies_cleared is True
-    assert fake_playwright.page.evaluate_calls == [
-        "window.localStorage.clear(); window.sessionStorage.clear();"
-    ]
+    storage_clear = "window.localStorage.clear(); window.sessionStorage.clear();"
+    assert fake_playwright.page.evaluate_calls[-1] == storage_clear
+    assert fake_playwright.page.evaluate_calls.count(storage_clear) == 1
     assert fake_playwright.context_closed is True
 
 
@@ -923,6 +925,18 @@ def test_detect_risk_returns_stable_pause_code(manager, fake_playwright, text, c
 
     assert risk.success is False
     assert risk.code == code
+    assert risk.should_pause is True
+
+
+def test_detect_risk_uses_dom_inner_text_when_locator_read_is_unavailable(
+    manager, fake_playwright
+) -> None:
+    fake_playwright.page.text = "请完成人机验证"
+    fake_playwright.page.body_error = TimeoutError("remote CDP locator timed out")
+
+    risk = manager.detect_risk(fake_playwright.page)
+
+    assert risk.code == "XHS_RISK_CONTROL"
     assert risk.should_pause is True
 
 

@@ -381,6 +381,8 @@ class FakePage:
         raise TimeoutError("requested note did not become ready")
 
     def evaluate(self, expression: str) -> object:
+        if "document.body?.innerText" in expression:
+            return self.body_text
         if "commentDisabled" in expression:
             return self.comment_disabled
         if "noteDetailMap" in expression:

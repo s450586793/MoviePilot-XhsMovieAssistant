@@ -333,8 +333,14 @@ class BrowserManager:
                 "XHS_RISK_CONTROL", "Risk control verification is required"
             )
         try:
-            text = str(page.locator("body").inner_text(timeout=3_000) or "")
+            text = page.evaluate("() => document.body?.innerText ?? ''")
         except Exception:
+            return OperationResult(
+                success=False,
+                code="TEMPORARY_FAILURE",
+                message="Page risk state could not be determined",
+            )
+        if not isinstance(text, str):
             return OperationResult(
                 success=False,
                 code="TEMPORARY_FAILURE",

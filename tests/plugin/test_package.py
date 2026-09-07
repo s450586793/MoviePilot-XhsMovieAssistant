@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.1.7": "优化远程 CDP 页面风控检测，避免慢速 DOM locator 导致轮询误失败。",
         "v0.1.6": "兼容 RedNote 新版评论和 @ 通知协议，并通过站内导航稳定触发读取。",
         "v0.1.5": "等待 RedNote 异步渲染登录标志，避免已登录会话误判。",
         "v0.1.4": "兼容 RedNote 新版页面的已登录状态识别。",
