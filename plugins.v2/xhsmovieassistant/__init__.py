@@ -186,6 +186,11 @@ class XhsMovieAssistant(_PluginBase):
         """Return the validated MoviePilot enable flag."""
         return self._enabled
 
+    @staticmethod
+    def get_render_mode() -> tuple[str, str]:
+        """Use MoviePilot's Vue federation host for configuration and detail pages."""
+        return "vue", "dist/assets"
+
     def get_service(self) -> list[dict[str, Any]]:
         """Expose one interval service unless processing is disabled or paused."""
         if not self.get_state() or self._repository is None:
@@ -229,15 +234,39 @@ class XhsMovieAssistant(_PluginBase):
         )
         return [
             {
-                "path": path,
-                "endpoint": endpoint,
-                "methods": ["POST"],
+                "path": "/state",
+                "endpoint": self.state,
+                "methods": ["GET"],
                 "auth": "bear",
-                "summary": summary,
-                "description": summary,
-            }
-            for path, endpoint, summary in routes
+                "summary": "读取缓存状态和最近请求",
+                "description": "读取缓存状态和最近请求",
+            },
+            *[
+                {
+                    "path": path,
+                    "endpoint": endpoint,
+                    "methods": ["POST"],
+                    "auth": "bear",
+                    "summary": summary,
+                    "description": summary,
+                }
+                for path, endpoint, summary in routes
+            ],
         ]
+
+    def state(self, request: Request = None, apikey: str | None = None) -> Any:
+        """Return cached health and durable rows without starting any runtime work."""
+        if not self._authorized(request, apikey):
+            return self._unauthorized()
+        return schemas.Response(
+            success=True,
+            data=_sanitize_payload(
+                {
+                    "status": self._page_status(),
+                    "requests": self._request_rows(),
+                }
+            ),
+        )
 
     def get_form(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Return MoviePilot's native Vuetify configuration schema."""
@@ -863,6 +892,7 @@ class XhsMovieAssistant(_PluginBase):
                 "id": item.id,
                 "status": item.status.value,
                 "title": item.title or "-",
+                "original_title": item.original_title or "-",
                 "media_type": item.media_type or "-",
                 "year": item.year or "-",
                 "season": item.season or "-",

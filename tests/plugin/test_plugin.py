@@ -173,6 +173,7 @@ def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
     routes = plugin.get_api()
 
     assert [route["path"] for route in routes] == [
+        "/state",
         "/chromium/install",
         "/login/start",
         "/logout",
@@ -185,8 +186,95 @@ def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
         "/test/moviepilot",
         "/test/notification",
     ]
-    assert all(route["methods"] == ["POST"] for route in routes)
+    state = routes[0]
+    assert state["methods"] == ["GET"]
+    assert all(route["methods"] == ["POST"] for route in routes[1:])
     assert all(route["auth"] == "bear" for route in routes)
+
+
+def test_state_endpoint_returns_cached_status_and_durable_rows_without_runtime_work(
+    tmp_path,
+):
+    plugin = _plugin(tmp_path)
+    plugin._cached_status = {
+        "browser": "READY",
+        "login": "LOGGED_IN",
+        "qrcode": None,
+        "activity": "IDLE",
+    }
+    request = SimpleNamespace(
+        id=7,
+        status=RequestStatus.NEED_CONFIRMATION,
+        title="Arrival",
+        original_title="L'arrivee",
+        media_type="movie",
+        year=2016,
+        season=None,
+        media_source="tmdb",
+        media_source_id="329865",
+        tmdb_id=329865,
+        score=0.93,
+        subscription_id=None,
+        error="UPSTREAM_ERROR",
+        reply_status=ReplyStatus.PENDING,
+        reply_id=None,
+        updated_at=datetime(2026, 9, 7, 12, tzinfo=timezone.utc),
+    )
+    plugin._repository = SimpleNamespace(
+        get_runtime_state=lambda: SimpleNamespace(
+            browser_state=entrypoint.BrowserState.READY,
+            pause_code=None,
+        ),
+        recent=lambda limit: [request],
+    )
+    plugin._browser = SimpleNamespace(
+        check_login=lambda: (_ for _ in ()).throw(AssertionError("browser work")),
+        install_chromium=lambda: (_ for _ in ()).throw(AssertionError("browser work")),
+    )
+    plugin._resolver = SimpleNamespace(
+        resolve=lambda value: (_ for _ in ()).throw(AssertionError("LLM work")),
+    )
+    plugin._moviepilot = SimpleNamespace(
+        match=lambda value: (_ for _ in ()).throw(AssertionError("MoviePilot work")),
+    )
+    plugin._service = SimpleNamespace(
+        poll_once=lambda: (_ for _ in ()).throw(AssertionError("service work")),
+    )
+    plugin.post_message = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("notification work")
+    )
+
+    client = _moviepilot_route_client(plugin, "/state")
+    response = client.get("/state", headers={"Authorization": "Bearer browser-jwt"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["data"] == {
+        "status": {
+            "browser": "READY",
+            "login": "LOGGED_IN",
+            "qrcode": None,
+            "activity": "IDLE",
+            "pause_code": None,
+        },
+        "requests": [
+            {
+                "id": 7,
+                "status": "NEED_CONFIRMATION",
+                "title": "Arrival",
+                "original_title": "L'arrivee",
+                "media_type": "movie",
+                "year": 2016,
+                "season": "-",
+                "match": "tmdb:329865 (0.93)",
+                "subscription_id": "-",
+                "reply": "PENDING",
+                "error": "UPSTREAM_ERROR",
+                "updated_at": "2026-09-07T12:00:00+00:00",
+            }
+        ],
+    }
 
 
 def test_moviepilot_browser_jwt_reaches_bearer_authenticated_endpoint(tmp_path):
@@ -439,6 +527,7 @@ def test_stop_service_uses_bounded_join_and_closes_active_context(tmp_path):
     ("path", "args", "kwargs"),
     [
         ("/chromium/install", (), {}),
+        ("/state", (), {}),
         ("/login/start", (), {}),
         ("/logout", (), {}),
         ("/resume", (), {}),
