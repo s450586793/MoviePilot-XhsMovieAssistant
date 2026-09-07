@@ -159,7 +159,8 @@ def test_readme_documents_safe_moviepilot_operator_flow() -> None:
     required_phrases = (
         "MoviePilot >= 2.15.6",
         "自定义插件市场",
-        "本仓库实际发布后的公开 HTTPS Git URL",
+        "https://github.com/s450586793/MoviePilot-XhsMovieAssistant/",
+        "无需额外 Docker",
         "Chromium",
         "RedNote",
         "授权用户 ID",
@@ -178,6 +179,7 @@ def test_readme_documents_safe_moviepilot_operator_flow() -> None:
     assert "Cookie" not in readme
     assert "xsec_token" not in readme
     assert "MP token" not in readme
+    assert "本仓库实际发布后的公开 HTTPS Git URL" not in readme
     assert "LLM key" not in readme
     assert "原始通知" not in readme
 

@@ -1,21 +1,77 @@
 # 小红书影视助手
 
-小红书影视助手是 MoviePilot V2 插件：它只处理已授权账号发出的评论艾特，使用 MoviePilot 已配置的 AI 识别影视，再通过 MoviePilot 原生订阅链路处理结果。需要 `MoviePilot >= 2.15.6`。
+<p align="center">
+  <img src="icons/xhsmovieassistant.png" width="128" height="128" alt="小红书影视助手图标">
+</p>
 
-先确认 dry-run 结果，再决定是否放开任何有外部影响的操作。默认关闭订阅创建和小红书公开回复。
+[![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
+[![Version](https://img.shields.io/badge/version-0.1.0-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
+
+小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
+RedNote 笔记评论中 `@` 专用助手账号后，插件会读取授权账号发出的请求，复用
+MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原生链路完成匹配、
+查重和订阅。
+
+插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
+Emby 入库继续沿用你已有的 MoviePilot 配置。
+
+> `v0.1.0` 是首个公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> 订阅。真实订阅和小红书公开回复默认均为关闭状态。
+
+## 功能
+
+- 低频读取专用小号收到的“评论和 @”通知，不抓推荐流。
+- 只允许配置的稳定用户 ID 触发，昵称不会作为授权依据。
+- 获取触发评论、笔记标题、正文、作者和少量相关评论。
+- 复用 MoviePilot 当前 AI 配置，不单独保存模型地址、Key 或 Token。
+- 按标题、原名、类型、年份和季数进行确定性匹配；结果歧义时要求人工确认。
+- 查询媒体库和已有订阅，避免重复创建。
+- 使用 SQLite 保存请求状态，支持崩溃恢复与幂等处理。
+- 通过 MoviePilot 已配置的消息渠道发送处理结果。
+- 可选使用固定模板回复原始小红书评论；不会让 AI 自由生成公开回复。
+- 提供 Vue 管理页，可查看状态、扫码、人工确认、重处理、忽略和运行诊断。
+
+## 系统要求
+
+- `MoviePilot >= 2.15.6`（V2）。
+- NAS 或主机能够访问所选的小红书/RedNote 站点和 GitHub 插件仓库。
+- MoviePilot 已配置可用的 AI 服务；插件直接复用该配置。
+- MoviePilot 容器对插件数据目录有写权限，并具备运行 Playwright Chromium 的
+  系统依赖。
+
+这是纯 MoviePilot 插件，**无需额外 Docker 容器**，也不需要配置 MP 地址或
+MP Token。仓库根目录的 `Dockerfile`、`docker-compose.yml` 和 `src/xhs_probe/`
+是早期 Phase 1-3 验证工具，不是插件安装入口。
 
 ## 安装
 
-1. 先由发布者将本仓库发布到公开 HTTPS Git 地址；在 MoviePilot 的“设置 - 插件”中，将自定义插件市场地址添加为“本仓库实际发布后的公开 HTTPS Git URL”。发布者必须将这段占位文字替换为实际地址，当前仓库没有可填写的远程地址。
-2. 刷新自定义插件市场，找到“小红书影视助手”，安装并启用插件。
-3. 在插件详情页选择“安装 Chromium”。安装完成前不要开始登录或轮询。
+1. 打开 MoviePilot 的“插件”页面，进入“插件市场设置”（自定义插件市场）。
+2. 添加下面的插件仓库地址并保存：
+
+   ```text
+   https://github.com/s450586793/MoviePilot-XhsMovieAssistant/
+   ```
+
+3. 刷新插件市场，搜索“小红书影视助手”，点击安装。
+4. 打开插件详情页，点击“安装 Chromium”。安装是后台任务，完成前不要生成登录
+   二维码或启用轮询；通常不需要重启 DSM。
+
+MoviePilot V2 读取该仓库 `main` 分支的 `package.v2.json`，插件更新发布后只需
+刷新插件市场并执行更新。若 NAS 无法访问 GitHub，请先配置 MoviePilot 的 GitHub
+网络代理，不要把 GitHub 凭据写入插件设置。
 
 ## 首次授权
 
-1. 在插件设置中保持“启用轮询”关闭，填写将要允许发起请求的稳定“授权用户 ID”。
-2. 稳定 ID 应从一次已确认的页面请求中核对后填写，不要把昵称、展示名或可变短 ID 当作授权依据；多个 ID 可用逗号或换行分隔。
-3. 点击“生成登录二维码”，用专门的小红书账号扫码。若登录页自动跳转到国际站，在站点下拉框选择 `RedNote`，再重新生成二维码并完成授权。
-4. 扫码完成后检查插件页面：浏览器应为 `READY`，登录状态应不再是 `WAITING_FOR_SCAN`。然后保存设置。
+1. 在插件设置中保持“启用轮询”“允许真实订阅”和“小红书公开回复”全部关闭。
+2. 填写允许发起请求的稳定“授权用户 ID”。可以从主账号网页版个人主页 URL，或
+   一次已确认的 `@` 通知请求中核对该 ID；不要使用昵称、展示名或可变短 ID。
+   多个 ID 可用英文逗号或换行分隔。
+3. 选择助手小号实际使用的站点。点击“生成登录二维码”，用专门的小红书助手
+   账号扫码；若登录页自动跳转国际站，选择 `RedNote` 后重新生成二维码。
+4. 扫码完成后刷新插件页：Chromium 应显示 `AVAILABLE`，浏览器应为 `READY`，
+   登录状态应不再是 `WAITING_FOR_SCAN`。然后保存设置。
+5. 先点击“测试 AI”“测试 MoviePilot”和“测试通知”，分别确认现有 MP 能力正常。
 
 ## 先验证，再订阅
 
@@ -24,6 +80,30 @@
 3. 确认 `DRY_RUN_MATCHED`、匹配标题和季信息都正确后，才在设置中打开“允许真实订阅”。后续成功请求会显示 `SUBSCRIBED`。
 
 不要将“MoviePilot 通知”当作订阅开关；它只控制 MoviePilot 内的通知。小红书“公开回复”为可选功能，风险更高：它会把处理结果公开写回站点。总开关和四个分类开关默认全部关闭；只有“小红书公开回复”与对应的“订阅成功”“已存在”“需人工确认”或“处理失败”分类同时打开，才会发送该类结果。建议在长期 dry-run 稳定后、且已审核回复模板时按需逐类打开。
+
+## 工作流程
+
+```text
+授权主账号 @ 助手小号
+        ↓
+低频读取“评论和 @”
+        ↓
+校验稳定用户 ID
+        ↓
+读取并清洗笔记上下文
+        ↓
+MoviePilot AI 结构化识别
+        ↓
+MoviePilot 搜索、唯一匹配与查重
+        ↓
+dry-run 或创建订阅
+        ↓
+MoviePilot 消息通知 / 可选固定模板评论回复
+```
+
+无法确定具体作品、同名年份歧义、类型冲突或季数不明确时，插件不会选择搜索结果
+中的第一项，而是进入 `NEED_CONFIRMATION`。可在插件管理页补充标题、原名、类型、
+年份和季数后重新匹配。
 
 ## 状态说明
 
@@ -48,6 +128,52 @@
 | 公开回复为 `FAILED` | 不会自动重试或重新发送。先修复根因，再人工处理；不要将请求“重新处理”当作公开回复重发操作。 |
 | `PAUSED`、`FAILED` 或 `START_FAILED` | 先处理页面显示的浏览器/登录原因，再点击“恢复轮询”；恢复前保持真实订阅关闭。 |
 
+## 安全与隐私
+
+- 小红书账号密码不会写入代码或配置；扫码后的浏览器 Profile 保存在 MoviePilot
+  插件数据目录中。
+- 浏览器 Profile、SQLite 数据库、日志、`.env` 和各类会话凭据均被排除在
+  Git 仓库之外。
+- 瞬时笔记访问凭据只用于当前浏览器会话，不进入数据库、AI 输入或日志。
+- 完整稳定用户 ID 不会显示在管理页或日志中。
+- 遇到登录失效、验证码、`300012`、限流或风险控制时，插件会暂停，不会无限重试。
+- 不会自动点赞、关注、抓取推荐流或批量发送消息。
+- 小红书并未提供面向此场景的稳定机器人接口，页面结构和风控策略可能变化。请使用
+  专用小号、低频轮询，并遵守账号所在地区的平台规则。
+
+## 已知限制
+
+- V1 不做 OCR、视频字幕、关键帧识别或推荐流抓取。
+- 只有模糊文案、无片名画面或多个作品混剪的笔记通常需要人工确认。
+- 国内站与 RedNote 的登录跳转、可见 DOM 和通知接口可能因账号或出口网络不同。
+- 离线测试和 MoviePilot `v2.15.6` import/route smoke 已通过；不同 NAS 镜像中的
+  Chromium 系统库，以及真实站点链路仍需每位用户先完成 dry-run 验证。
+
+## 开发验证
+
+```bash
+python -m pytest -o addopts='' -q
+python -m pytest -o addopts='' -q \
+  --cov=xhs_probe --cov=xhsmovieassistant --cov-fail-under=80
+npm ci --prefix plugins.v2/xhsmovieassistant
+npm test --prefix plugins.v2/xhsmovieassistant
+npm run build --prefix plugins.v2/xhsmovieassistant
+python -m pytest -o addopts='' -q tests/plugin/test_package.py
+python -m compileall -q src plugins.v2 tests
+git diff --check
+```
+
+当前 `v0.1.0` 发布验证结果为：Python `417 passed`、覆盖率 `89.09%`、Vue/Vitest
+`12 passed`、MoviePilot `v2.15.6` 隔离 import/route smoke 通过。该 smoke 不调用
+真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
+
 ## 实现证据
 
 仓库中保留了 Phase 1–3 的离线验证证据：`src/xhs_probe/` 包含早期捕获与导入工具，`tests/test_capture.py`、`tests/test_ingest.py` 和 `tests/test_phase3_cli.py` 覆盖其契约。它们用于追溯和开发验证；日常安装、扫码、授权、状态查看与恢复都应在 MoviePilot 插件界面完成。
+
+## 许可与反馈
+
+本项目使用 [MIT License](LICENSE)。问题反馈请提交到
+[GitHub Issues](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/issues)，
+并附上 MoviePilot 版本、站点类型、脱敏后的错误码和复现步骤；不要上传浏览器
+会话凭据、二维码、完整用户 ID、Token 或未经脱敏的站点响应。
