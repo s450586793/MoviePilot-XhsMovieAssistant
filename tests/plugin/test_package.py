@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 from xhsmovieassistant import XhsMovieAssistant
 
@@ -134,10 +136,25 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
-        f"v{XhsMovieAssistant.plugin_version}": (
-            "首个可测试版本，支持扫码、授权艾特、AI 识别、去重和订阅。"
-        )
+        "v0.1.1": "兼容 MoviePilot 已安装的 Playwright 1.x，避免共享依赖冲突。",
+        "v0.1.0": "首个可测试版本，支持扫码、授权艾特、AI 识别、去重和订阅。",
     }
+
+
+def test_runtime_dependency_accepts_moviepilot_playwright() -> None:
+    requirements_path = (
+        ROOT / "plugins.v2" / "xhsmovieassistant" / "requirements.txt"
+    )
+    requirements = [
+        Requirement(line)
+        for line in requirements_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    playwright = next(item for item in requirements if item.name == "playwright")
+    assert playwright.specifier.contains(Version("1.55.0"))
+    assert playwright.specifier.contains(Version("1.62.0"))
+    assert not playwright.specifier.contains(Version("2.0.0"))
 
 
 def test_market_icon_is_local_png_with_supported_dimensions() -> None:
