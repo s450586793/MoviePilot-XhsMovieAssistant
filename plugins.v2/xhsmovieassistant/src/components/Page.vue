@@ -246,6 +246,20 @@ onMounted(loadState)
       <div class="xhs-movie-page__section-title">
         <h2 id="session-import">登录凭据</h2>
       </div>
+      <aside class="xhs-movie-page__credential-help" aria-labelledby="cookie-help-title">
+        <div class="xhs-movie-page__credential-help-title">
+          <h3 id="cookie-help-title">Cookie 从哪里获取</h3>
+          <a href="https://www.xiaohongshu.com/explore" target="_blank" rel="noopener noreferrer">打开小红书网页版</a>
+        </div>
+        <ol>
+          <li>使用电脑 Chrome 或 Edge 登录“小红书影视助手”小号。</li>
+          <li>按 F12 打开开发者工具，选择 Network（网络），然后刷新页面。</li>
+          <li>点开任意发往 xiaohongshu.com 的请求，在 Headers（标头）→ Request Headers（请求标头）中找到 Cookie。</li>
+          <li>只复制 <code>Cookie:</code> 后面的完整内容，粘贴到下方并点击“导入 Cookie”。</li>
+        </ol>
+        <p>插件设置选择 RedNote 时，请改在 <a href="https://www.rednote.com/explore" target="_blank" rel="noopener noreferrer">RedNote 网页版</a>执行相同步骤，凭据必须与所选站点一致。</p>
+        <p class="xhs-movie-page__credential-warning">Cookie 等同于账号登录凭据。不要使用 <code>document.cookie</code>，也不要把 Cookie 发给他人、上传 GitHub 或放进截图。</p>
+      </aside>
       <div class="xhs-movie-page__session-import">
         <VTextField v-model="cookieDraft" label="小红书 Cookie" type="password" autocomplete="new-password" density="comfortable" @keyup.enter="importCookie" />
         <VBtn prepend-icon="mdi-cookie-check-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/import'" @click="importCookie">导入 Cookie</VBtn>
@@ -396,6 +410,29 @@ dd { font-size: 14px; margin: 3px 0 0; overflow-wrap: anywhere; }
 
 .xhs-movie-page__section-title { border-bottom: 1px solid var(--xhs-rule); padding-bottom: 8px; }
 .xhs-movie-page__section-title span { color: var(--xhs-muted); font-size: 14px; }
+
+.xhs-movie-page__credential-help {
+  border-left: 3px solid var(--xhs-focus);
+  font-size: 14px;
+  line-height: 1.6;
+  margin-top: 12px;
+  padding: 4px 0 4px 12px;
+}
+
+.xhs-movie-page__credential-help-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  justify-content: space-between;
+}
+
+.xhs-movie-page__credential-help h3 { font-size: 15px; }
+.xhs-movie-page__credential-help ol { margin: 8px 0; padding-left: 22px; }
+.xhs-movie-page__credential-help p { margin: 6px 0 0; }
+.xhs-movie-page__credential-help a { color: var(--xhs-focus); }
+.xhs-movie-page__credential-help code { overflow-wrap: anywhere; }
+.xhs-movie-page__credential-warning { color: var(--xhs-muted); }
 
 .xhs-movie-page__tool-grid,
 .xhs-movie-page__session-import,

@@ -1,7 +1,7 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 
-const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,withKeys:_withKeys,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
+const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,withKeys:_withKeys,renderList:_renderList,Fragment:_Fragment,createStaticVNode:_createStaticVNode} = await importShared('vue');
 
 
 const _hoisted_1 = {
@@ -336,9 +336,7 @@ return (_ctx, _cache) => {
       ])
     ]),
     _createElementVNode("section", _hoisted_5, [
-      _cache[19] || (_cache[19] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
-        _createElementVNode("h2", { id: "session-import" }, "登录凭据")
-      ], -1)),
+      _cache[19] || (_cache[19] = _createStaticVNode("<div class=\"xhs-movie-page__section-title\" data-v-145584e7><h2 id=\"session-import\" data-v-145584e7>登录凭据</h2></div><aside class=\"xhs-movie-page__credential-help\" aria-labelledby=\"cookie-help-title\" data-v-145584e7><div class=\"xhs-movie-page__credential-help-title\" data-v-145584e7><h3 id=\"cookie-help-title\" data-v-145584e7>Cookie 从哪里获取</h3><a href=\"https://www.xiaohongshu.com/explore\" target=\"_blank\" rel=\"noopener noreferrer\" data-v-145584e7>打开小红书网页版</a></div><ol data-v-145584e7><li data-v-145584e7>使用电脑 Chrome 或 Edge 登录“小红书影视助手”小号。</li><li data-v-145584e7>按 F12 打开开发者工具，选择 Network（网络），然后刷新页面。</li><li data-v-145584e7>点开任意发往 xiaohongshu.com 的请求，在 Headers（标头）→ Request Headers（请求标头）中找到 Cookie。</li><li data-v-145584e7>只复制 <code data-v-145584e7>Cookie:</code> 后面的完整内容，粘贴到下方并点击“导入 Cookie”。</li></ol><p data-v-145584e7>插件设置选择 RedNote 时，请改在 <a href=\"https://www.rednote.com/explore\" target=\"_blank\" rel=\"noopener noreferrer\" data-v-145584e7>RedNote 网页版</a>执行相同步骤，凭据必须与所选站点一致。</p><p class=\"xhs-movie-page__credential-warning\" data-v-145584e7>Cookie 等同于账号登录凭据。不要使用 <code data-v-145584e7>document.cookie</code>，也不要把 Cookie 发给他人、上传 GitHub 或放进截图。</p></aside>", 2)),
       _createElementVNode("div", _hoisted_6, [
         _createVNode(_component_VTextField, {
           modelValue: cookieDraft.value,
@@ -628,6 +626,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ee4347ff"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-145584e7"]]);
 
 export { Page as default };

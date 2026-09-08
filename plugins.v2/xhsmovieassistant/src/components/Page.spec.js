@@ -103,6 +103,19 @@ describe('Page manual resolution', () => {
     expect(wrapper.findAll('button').some(button => button.text() === '安装 Chromium')).toBe(true)
   })
 
+  it('shows complete Cookie acquisition and credential safety guidance', async () => {
+    const { wrapper } = await mountPage()
+    const help = wrapper.get('[aria-labelledby="cookie-help-title"]')
+
+    expect(help.text()).toContain('Cookie 从哪里获取')
+    expect(help.text()).toContain('Network（网络）')
+    expect(help.text()).toContain('Request Headers（请求标头）')
+    expect(help.text()).toContain('document.cookie')
+    expect(help.text()).toContain('RedNote')
+    expect(help.get('a[href="https://www.xiaohongshu.com/explore"]').attributes('rel')).toBe('noopener noreferrer')
+    expect(help.get('a[href="https://www.rednote.com/explore"]').attributes('rel')).toBe('noopener noreferrer')
+  })
+
   it('imports a masked Cookie and clears the field immediately', async () => {
     const { api, wrapper } = await mountPage()
     const input = wrapper.get('input[aria-label="小红书 Cookie"]')

@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.2.0-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.2.1-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.2.0` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.2.1` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -51,16 +51,33 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 当前选择的小红书/RedNote 站点过滤，再以 `0600` 权限保存到 MoviePilot 插件私有数据
 目录。插件设置、状态接口和日志均不会回显 Cookie 值。
 
-推荐使用 Storage State，因为它可以同时携带 Cookie 和站点 Local Storage。在电脑上
-安装 Node.js 后，可使用 Playwright 打开本地浏览器并在其中人工登录：
+### 从 Chrome / Edge 获取 Cookie
+
+1. 先在插件设置中确认选择的是“小红书”还是“RedNote”。
+2. 在电脑浏览器打开对应网站，登录“小红书影视助手”小号：国内站使用
+   `https://www.xiaohongshu.com/explore`，RedNote 使用 `https://www.rednote.com/explore`。
+3. 按 `F12` 打开开发者工具，切换到 `Network`（网络），然后刷新页面。
+4. 点开任意发往当前站点的请求，在 `Headers`（标头）→ `Request Headers`（请求标头）
+   中找到 `Cookie`。
+5. 复制 `Cookie:` 后面的完整值，粘贴到插件管理页并点击“导入 Cookie”。只粘贴值
+   即可；如果连同 `Cookie:` 一起复制，插件也能识别。
+6. 导入后插件会立即验证；页面应显示登录凭据 `PRESENT`、登录状态 `LOGGED_IN`。
+
+不要在 Console（控制台）运行 `document.cookie` 获取凭据，它通常拿不到 HttpOnly
+Cookie，会造成登录验证失败。Cookie 等同于账号登录凭据，不要发给他人，也不要上传到
+GitHub、Issue、聊天、截图或日志。
+
+### 获取 Storage State
+
+Storage State 可以同时携带 Cookie 和站点 Local Storage。在电脑上安装 Node.js 后，
+可使用 Playwright 打开本地浏览器并在其中人工登录：
 
 ```bash
 npx playwright codegen --save-storage=storageState.json https://www.xiaohongshu.com
 ```
 
 RedNote 账号将地址改为 `https://www.rednote.com`。登录完成后关闭 Playwright，再在插件
-管理页选择该 JSON 文件。Cookie 模式可从浏览器开发者工具 Network 请求的 Request
-Headers 中复制完整 `Cookie` 值；不要使用只包含非 HttpOnly 项的 `document.cookie`。
+管理页选择该 JSON 文件。
 
 Cookie 和 `storageState.json` 都等同于账号登录凭据，只应在自己的设备与 MoviePilot
 之间传递。不要上传到 GitHub、Issue、聊天、截图或日志。导入后插件会立即访问所选站点
@@ -194,8 +211,8 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.2.0` 发布验证：Python `463 passed`，总覆盖率 `88.72%`；Vue
-`21 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
+当前 `v0.2.1` 发布验证：Python `463 passed`，总覆盖率 `88.72%`；Vue
+`22 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 
 ## 实现证据
