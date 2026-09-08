@@ -23,11 +23,16 @@ const DEFAULT_CONFIG = Object.freeze({
   authorized_user_ids: '',
   poll_interval_minutes: 2,
   confidence_threshold: 0.85,
-  template_SUBSCRIBED: '检测到{media_type}《{title}》{year_text}{season_text}，已推送订阅。',
+  template_SUBSCRIBED: '收到，已安排订阅。',
   template_ALREADY_SUBSCRIBED: '《{title}》{year_text}{season_text}已经订阅，无需重复添加。',
   template_ALREADY_IN_LIBRARY: '《{title}》{year_text}{season_text}已经在媒体库中。',
-  template_NEED_CONFIRMATION: '暂时无法确定这篇笔记中的具体影视作品，请人工确认。',
+  template_NEED_CONFIRMATION: '收到，影视不明确，请明示。',
   template_FAILED: '本次订阅处理失败，详情已通过 MoviePilot 通知发送。',
+})
+
+const LEGACY_DEFAULT_TEMPLATES = Object.freeze({
+  template_SUBSCRIBED: '检测到{media_type}《{title}》{year_text}{season_text}，已推送订阅。',
+  template_NEED_CONFIRMATION: '暂时无法确定这篇笔记中的具体影视作品，请人工确认。',
 })
 
 const localConfig = ref({ ...DEFAULT_CONFIG })
@@ -37,7 +42,11 @@ function clone(value) {
 }
 
 function normalizedConfig(value) {
-  return { ...DEFAULT_CONFIG, ...clone(value) }
+  const normalized = { ...DEFAULT_CONFIG, ...clone(value) }
+  Object.entries(LEGACY_DEFAULT_TEMPLATES).forEach(([key, legacyValue]) => {
+    if (normalized[key] === legacyValue) normalized[key] = DEFAULT_CONFIG[key]
+  })
+  return normalized
 }
 
 function saveConfig() {

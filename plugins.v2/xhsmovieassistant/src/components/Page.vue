@@ -12,6 +12,7 @@ const snapshot = ref({ status: {}, requests: [] })
 const drafts = reactive({})
 
 const actionableStatuses = new Set(['NEW', 'FAILED', 'NEED_CONFIRMATION', 'DRY_RUN_MATCHED'])
+const replyableStatuses = new Set(['SUBSCRIBED', 'ALREADY_SUBSCRIBED', 'ALREADY_IN_LIBRARY', 'NEED_CONFIRMATION', 'FAILED'])
 const status = computed(() => snapshot.value.status || {})
 const requests = computed(() => Array.isArray(snapshot.value.requests) ? snapshot.value.requests : [])
 const qrSource = computed(() => status.value.qrcode || '')
@@ -54,6 +55,10 @@ function optionalInteger(value) {
 
 function isActionable(row) {
   return actionableStatuses.has(row.status)
+}
+
+function canReply(row) {
+  return replyableStatuses.has(row.status) && row.reply === 'PENDING'
 }
 
 function showFeedback(type, text, source = 'action') {
@@ -234,10 +239,11 @@ onMounted(loadState)
           <VTextField v-model="draftFor(row).season" label="季（可选）" density="comfortable" inputmode="numeric" />
         </div>
 
-        <footer v-if="isActionable(row)" class="xhs-movie-request__actions">
-          <VBtn icon="mdi-replay" variant="text" title="重新处理" :loading="actionKey === `plugin/XhsMovieAssistant/requests/${row.id}/reprocess`" :aria-label="`重新处理请求 #${row.id}`" @click="runAction(`plugin/XhsMovieAssistant/requests/${row.id}/reprocess`, `请求 #${row.id} 重新处理`)" />
-          <VBtn icon="mdi-eye-off-outline" variant="text" title="忽略请求" :loading="actionKey === `plugin/XhsMovieAssistant/requests/${row.id}/ignore`" :aria-label="`忽略请求 #${row.id}`" @click="runAction(`plugin/XhsMovieAssistant/requests/${row.id}/ignore`, `请求 #${row.id} 已忽略`)" />
-          <VBtn color="primary" prepend-icon="mdi-check-decagram-outline" :loading="actionKey === `plugin/XhsMovieAssistant/requests/${row.id}/manual`" @click="submitManual(row)">人工确认</VBtn>
+        <footer v-if="isActionable(row) || canReply(row)" class="xhs-movie-request__actions">
+          <VBtn v-if="isActionable(row)" icon="mdi-replay" variant="text" title="重新处理" :loading="actionKey === `plugin/XhsMovieAssistant/requests/${row.id}/reprocess`" :aria-label="`重新处理请求 #${row.id}`" @click="runAction(`plugin/XhsMovieAssistant/requests/${row.id}/reprocess`, `请求 #${row.id} 重新处理`)" />
+          <VBtn v-if="isActionable(row)" icon="mdi-eye-off-outline" variant="text" title="忽略请求" :loading="actionKey === `plugin/XhsMovieAssistant/requests/${row.id}/ignore`" :aria-label="`忽略请求 #${row.id}`" @click="runAction(`plugin/XhsMovieAssistant/requests/${row.id}/ignore`, `请求 #${row.id} 已忽略`)" />
+          <VBtn v-if="isActionable(row)" color="primary" prepend-icon="mdi-check-decagram-outline" :loading="actionKey === `plugin/XhsMovieAssistant/requests/${row.id}/manual`" @click="submitManual(row)">人工确认</VBtn>
+          <VBtn v-if="canReply(row)" icon="mdi-reply" variant="text" title="补发小红书回复" :loading="actionKey === `plugin/XhsMovieAssistant/requests/${row.id}/reply`" :aria-label="`补发小红书回复 #${row.id}`" @click="runAction(`plugin/XhsMovieAssistant/requests/${row.id}/reply`, `请求 #${row.id} 的小红书回复`)" />
         </footer>
       </article>
     </section>

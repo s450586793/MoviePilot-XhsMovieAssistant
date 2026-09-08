@@ -60,6 +60,7 @@ const snapshot = ref({ status: {}, requests: [] });
 const drafts = reactive({});
 
 const actionableStatuses = new Set(['NEW', 'FAILED', 'NEED_CONFIRMATION', 'DRY_RUN_MATCHED']);
+const replyableStatuses = new Set(['SUBSCRIBED', 'ALREADY_SUBSCRIBED', 'ALREADY_IN_LIBRARY', 'NEED_CONFIRMATION', 'FAILED']);
 const status = computed(() => snapshot.value.status || {});
 const requests = computed(() => Array.isArray(snapshot.value.requests) ? snapshot.value.requests : []);
 const qrSource = computed(() => status.value.qrcode || '');
@@ -102,6 +103,10 @@ function optionalInteger(value) {
 
 function isActionable(row) {
   return actionableStatuses.has(row.status)
+}
+
+function canReply(row) {
+  return replyableStatuses.has(row.status) && row.reply === 'PENDING'
 }
 
 function showFeedback(type, text, source = 'action') {
@@ -475,35 +480,55 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue", "onUpdate:modelValue"])
               ]))
             : _createCommentVNode("", true),
-          (isActionable(row))
+          (isActionable(row) || canReply(row))
             ? (_openBlock(), _createElementBlock("footer", _hoisted_14, [
-                _createVNode(_component_VBtn, {
-                  icon: "mdi-replay",
-                  variant: "text",
-                  title: "重新处理",
-                  loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/reprocess`,
-                  "aria-label": `重新处理请求 #${row.id}`,
-                  onClick: $event => (runAction(`plugin/XhsMovieAssistant/requests/${row.id}/reprocess`, `请求 #${row.id} 重新处理`))
-                }, null, 8, ["loading", "aria-label", "onClick"]),
-                _createVNode(_component_VBtn, {
-                  icon: "mdi-eye-off-outline",
-                  variant: "text",
-                  title: "忽略请求",
-                  loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/ignore`,
-                  "aria-label": `忽略请求 #${row.id}`,
-                  onClick: $event => (runAction(`plugin/XhsMovieAssistant/requests/${row.id}/ignore`, `请求 #${row.id} 已忽略`))
-                }, null, 8, ["loading", "aria-label", "onClick"]),
-                _createVNode(_component_VBtn, {
-                  color: "primary",
-                  "prepend-icon": "mdi-check-decagram-outline",
-                  loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/manual`,
-                  onClick: $event => (submitManual(row))
-                }, {
-                  default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
-                    _createTextVNode("人工确认", -1)
-                  ]))]),
-                  _: 1
-                }, 8, ["loading", "onClick"])
+                (isActionable(row))
+                  ? (_openBlock(), _createBlock(_component_VBtn, {
+                      key: 0,
+                      icon: "mdi-replay",
+                      variant: "text",
+                      title: "重新处理",
+                      loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/reprocess`,
+                      "aria-label": `重新处理请求 #${row.id}`,
+                      onClick: $event => (runAction(`plugin/XhsMovieAssistant/requests/${row.id}/reprocess`, `请求 #${row.id} 重新处理`))
+                    }, null, 8, ["loading", "aria-label", "onClick"]))
+                  : _createCommentVNode("", true),
+                (isActionable(row))
+                  ? (_openBlock(), _createBlock(_component_VBtn, {
+                      key: 1,
+                      icon: "mdi-eye-off-outline",
+                      variant: "text",
+                      title: "忽略请求",
+                      loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/ignore`,
+                      "aria-label": `忽略请求 #${row.id}`,
+                      onClick: $event => (runAction(`plugin/XhsMovieAssistant/requests/${row.id}/ignore`, `请求 #${row.id} 已忽略`))
+                    }, null, 8, ["loading", "aria-label", "onClick"]))
+                  : _createCommentVNode("", true),
+                (isActionable(row))
+                  ? (_openBlock(), _createBlock(_component_VBtn, {
+                      key: 2,
+                      color: "primary",
+                      "prepend-icon": "mdi-check-decagram-outline",
+                      loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/manual`,
+                      onClick: $event => (submitManual(row))
+                    }, {
+                      default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
+                        _createTextVNode("人工确认", -1)
+                      ]))]),
+                      _: 1
+                    }, 8, ["loading", "onClick"]))
+                  : _createCommentVNode("", true),
+                (canReply(row))
+                  ? (_openBlock(), _createBlock(_component_VBtn, {
+                      key: 3,
+                      icon: "mdi-reply",
+                      variant: "text",
+                      title: "补发小红书回复",
+                      loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/reply`,
+                      "aria-label": `补发小红书回复 #${row.id}`,
+                      onClick: $event => (runAction(`plugin/XhsMovieAssistant/requests/${row.id}/reply`, `请求 #${row.id} 的小红书回复`))
+                    }, null, 8, ["loading", "aria-label", "onClick"]))
+                  : _createCommentVNode("", true)
               ]))
             : _createCommentVNode("", true)
         ]))
@@ -514,6 +539,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-81a8d770"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-03951d02"]]);
 
 export { Page as default };

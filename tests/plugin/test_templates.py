@@ -36,13 +36,13 @@ def test_confirmation_uses_the_fixed_template() -> None:
     result = ProcessingResult(status=RequestStatus.NEED_CONFIRMATION)
 
     assert ReplyTemplates().render(result) == (
-        "暂时无法确定这篇笔记中的具体影视作品，请人工确认。"
+        "收到，影视不明确，请明示。"
     )
 
 
 def test_subscribed_template_renders_only_deterministic_media_fields() -> None:
     assert ReplyTemplates().render(resolved_result(RequestStatus.SUBSCRIBED)) == (
-        "检测到电影《星际穿越》（2014），已推送订阅。"
+        "收到，已安排订阅。"
     )
 
 

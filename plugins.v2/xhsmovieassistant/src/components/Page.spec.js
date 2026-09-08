@@ -56,6 +56,10 @@ function manualButton(wrapper) {
   return wrapper.findAll('button').find(button => button.text() === '人工确认')
 }
 
+function replyButton(wrapper) {
+  return wrapper.find('button[aria-label^="补发小红书回复"]')
+}
+
 describe('Page manual resolution', () => {
   it('clears a stale state-load error after a successful refresh', async () => {
     const get = vi.fn()
@@ -171,6 +175,27 @@ describe('Page manual resolution', () => {
     await flushPromises()
 
     expect(wrapper.get(`[data-alert-type="${alertType}"]`).text()).toContain(feedback)
+  })
+
+  it('offers one pending terminal result for an explicit reply retry', async () => {
+    const { api, wrapper } = await mountPage({
+      row: request({ status: 'SUBSCRIBED', reply: 'PENDING' }),
+      postResponse: { success: true, data: { status: 'SUBSCRIBED' } },
+    })
+
+    await replyButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(api.post).toHaveBeenCalledWith('plugin/XhsMovieAssistant/requests/7/reply')
+    expect(wrapper.get('[data-alert-type="success"]').text()).toContain('小红书回复完成')
+  })
+
+  it.each(['SENT:reply-1', 'FAILED'])('does not offer another reply after delivery is final: %s', async (reply) => {
+    const { wrapper } = await mountPage({
+      row: request({ status: 'SUBSCRIBED', reply }),
+    })
+
+    expect(replyButton(wrapper).exists()).toBe(false)
   })
 
   it('gives the refresh and request actions a 44px minimum touch target', async () => {

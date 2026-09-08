@@ -132,6 +132,24 @@ def test_default_config_is_dry_run_and_public_reply_off(tmp_path):
     assert defaults["cdp_token"] == ""
 
 
+def test_legacy_default_reply_text_is_migrated_without_overwriting_custom_text(
+    tmp_path,
+):
+    plugin = _plugin(tmp_path)
+
+    plugin._apply_config(
+        {
+            "template_SUBSCRIBED": "检测到{media_type}《{title}》{year_text}{season_text}，已推送订阅。",
+            "template_NEED_CONFIRMATION": "暂时无法确定这篇笔记中的具体影视作品，请人工确认。",
+            "template_FAILED": "我自己的失败文案",
+        }
+    )
+
+    assert plugin._template_values["SUBSCRIBED"] == "收到，已安排订阅。"
+    assert plugin._template_values["NEED_CONFIRMATION"] == "收到，影视不明确，请明示。"
+    assert plugin._template_values["FAILED"] == "我自己的失败文案"
+
+
 def test_init_plugin_clamps_config_and_requires_authorized_ids(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
     built = []
@@ -171,6 +189,174 @@ def test_get_service_is_interval_and_hidden_while_paused(tmp_path):
     assert plugin.get_service() == []
 
 
+def test_confirmation_request_arms_moviepilot_input_for_wechat_admins(
+    tmp_path,
+    monkeypatch,
+):
+    plugin = _plugin(tmp_path)
+    calls = []
+    configs = {
+        "primary": SimpleNamespace(
+            name="primary",
+            config={"WECHAT_ADMINS": "user-a, user-b"},
+        )
+    }
+    module = SimpleNamespace(get_configs=lambda: configs)
+    monkeypatch.setattr(
+        entrypoint,
+        "ModuleManager",
+        lambda: SimpleNamespace(get_running_module=lambda module_id: module),
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "plugin_input_interaction_manager",
+        SimpleNamespace(create_or_replace=lambda **kwargs: calls.append(kwargs)),
+    )
+
+    plugin._arm_wechat_confirmation(21)
+
+    assert [(call["user_id"], call["source"]) for call in calls] == [
+        ("user-a", "primary"),
+        ("user-b", "primary"),
+    ]
+    assert all(call["plugin_id"] == "XhsMovieAssistant" for call in calls)
+    assert all(call["payload"] == {"request_id": 21} for call in calls)
+    assert all(call["channel"] is entrypoint.MessageChannel.Wechat for call in calls)
+
+
+def test_wechat_input_is_routed_to_the_pending_confirmation(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    calls = []
+    plugin._enabled = True
+    plugin._service = SimpleNamespace(
+        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_wechat_confirmation_targets",
+        lambda: frozenset({("user-a", "primary")}),
+    )
+    event = SimpleNamespace(
+        event_data={
+            "plugin_id": "XhsMovieAssistant",
+            "__mp_target_plugin_id": "XhsMovieAssistant",
+            "text": "plugin_input|session-1",
+            "input_text": "穿越时空的少女，2006，电影",
+            "userid": "user-a",
+            "channel": entrypoint.MessageChannel.Wechat,
+            "source": "primary",
+            "payload": {"request_id": 21},
+        }
+    )
+
+    plugin.handle_confirmation_input(event)
+
+    assert calls == [(21, "穿越时空的少女，2006，电影")]
+
+
+def test_confirmation_input_rejects_an_unconfigured_wechat_sender(
+    tmp_path,
+    monkeypatch,
+):
+    plugin = _plugin(tmp_path)
+    calls = []
+    plugin._enabled = True
+    plugin._service = SimpleNamespace(
+        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_wechat_confirmation_targets",
+        lambda: frozenset({("user-a", "primary")}),
+    )
+
+    plugin.handle_confirmation_input(
+        SimpleNamespace(
+            event_data={
+                "plugin_id": "XhsMovieAssistant",
+                "text": "plugin_input|session-1",
+                "input_text": "穿越时空的少女，2006，电影",
+                "userid": "other-user",
+                "channel": entrypoint.MessageChannel.Wechat,
+                "source": "primary",
+                "payload": {"request_id": 21},
+            }
+        )
+    )
+
+    assert calls == []
+
+
+def test_confirmation_input_reports_a_sanitized_failure_to_the_same_admin(
+    tmp_path,
+    monkeypatch,
+):
+    plugin = _plugin(tmp_path)
+    plugin._enabled = True
+    plugin._service = SimpleNamespace(
+        confirm_from_text=lambda request_id, text: (_ for _ in ()).throw(
+            RuntimeError("provider-secret")
+        )
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_wechat_confirmation_targets",
+        lambda: frozenset({("user-a", "primary")}),
+    )
+
+    plugin.handle_confirmation_input(
+        SimpleNamespace(
+            event_data={
+                "plugin_id": "XhsMovieAssistant",
+                "text": "plugin_input|session-1",
+                "input_text": "穿越时空的少女，2006，电影",
+                "userid": "user-a",
+                "channel": entrypoint.MessageChannel.Wechat,
+                "source": "primary",
+                "payload": {"request_id": 21},
+            }
+        )
+    )
+
+    assert plugin._posted_message["channel"] is entrypoint.MessageChannel.Wechat
+    assert plugin._posted_message["userid"] == "user-a"
+    assert plugin._posted_message["source"] == "primary"
+    assert "插件页人工确认" in plugin._posted_message["text"]
+    assert "provider-secret" not in repr(plugin._posted_message)
+
+
+def test_confirmation_slash_command_is_available_when_input_session_is_lost(
+    tmp_path,
+    monkeypatch,
+):
+    plugin = _plugin(tmp_path)
+    calls = []
+    plugin._enabled = True
+    plugin._service = SimpleNamespace(
+        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_wechat_confirmation_targets",
+        lambda: frozenset({("user-a", "primary")}),
+    )
+
+    command = next(item for item in plugin.get_command() if item["cmd"] == "/xhs_confirm")
+    plugin.handle_confirmation_command(
+        SimpleNamespace(
+            event_data={
+                **command["data"],
+                "arg_str": "21 穿越时空的少女，2006，电影",
+                "user": "user-a",
+                "channel": entrypoint.MessageChannel.Wechat,
+                "source": "primary",
+            }
+        )
+    )
+
+    assert calls == [(21, "穿越时空的少女，2006，电影")]
+
+
 def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
     plugin = _plugin(tmp_path)
     routes = plugin.get_api()
@@ -185,6 +371,7 @@ def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
         "/requests/{request_id}/reprocess",
         "/requests/{request_id}/ignore",
         "/requests/{request_id}/manual",
+        "/requests/{request_id}/reply",
         "/test/ai",
         "/test/moviepilot",
         "/test/notification",
@@ -478,6 +665,7 @@ def test_detail_page_exposes_match_errors_and_durable_row_actions(tmp_path):
         "plugin/XhsMovieAssistant/requests/7/reprocess",
         "plugin/XhsMovieAssistant/requests/7/ignore",
         "plugin/XhsMovieAssistant/requests/7/manual",
+        "plugin/XhsMovieAssistant/requests/7/reply",
     }
     assert request_buttons[
         "plugin/XhsMovieAssistant/requests/7/manual"
@@ -646,6 +834,7 @@ def test_stop_service_uses_bounded_join_and_closes_active_context(tmp_path):
         ("/requests/{request_id}/reprocess", (1,), {}),
         ("/requests/{request_id}/ignore", (1,), {}),
         ("/requests/{request_id}/manual", (1,), {"body": {"title": "A"}}),
+        ("/requests/{request_id}/reply", (1,), {}),
         ("/test/ai", (), {"body": {"title": "A"}}),
         ("/test/moviepilot", (), {"body": {"title": "A"}}),
         ("/test/notification", (), {}),
@@ -764,6 +953,10 @@ def test_service_actions_and_diagnostics_use_runtime_boundaries(tmp_path):
                 "title": resolution.title,
             }
         ),
+        reply=lambda request_id: SimpleNamespace(
+            id=request_id,
+            status="SUBSCRIBED",
+        ),
     )
     plugin._resolver = SimpleNamespace(resolve=lambda request: resolved)
     plugin._moviepilot = SimpleNamespace(match=lambda resolution: matched)
@@ -775,6 +968,7 @@ def test_service_actions_and_diagnostics_use_runtime_boundaries(tmp_path):
         {"title": "Arrival", "media_type": "movie", "year": 2016},
         apikey="test-api-token",
     ).success is True
+    assert plugin.reply(1, apikey="test-api-token").success is True
     assert plugin.test_ai(
         {"title": "Arrival"}, apikey="test-api-token"
     ).data["title"] == "Arrival"

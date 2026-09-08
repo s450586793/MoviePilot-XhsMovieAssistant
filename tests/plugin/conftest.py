@@ -26,6 +26,37 @@ class _NotificationType(Enum):
     Plugin = "plugin"
 
 
+class _MessageChannel(Enum):
+    Wechat = "wechat"
+
+
+class _EventType(Enum):
+    PluginAction = "plugin.action"
+    MessageAction = "message.action"
+
+
+class _Event:
+    def __init__(self, event_type: _EventType, event_data: dict[str, Any] | None = None):
+        self.event_type = event_type
+        self.event_data = event_data or {}
+
+
+class _EventManager:
+    @staticmethod
+    def register(_event_type: _EventType):
+        return lambda handler: handler
+
+
+class _InteractionManager:
+    def create_or_replace(self, **kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(**kwargs)
+
+
+class _ModuleManager:
+    def get_running_module(self, module_id: str) -> None:
+        return None
+
+
 class _PluginBase:
     def get_data_path(self) -> Path:
         return Path("/config/plugins") / self.__class__.__name__
@@ -38,6 +69,10 @@ def _install_moviepilot_stubs() -> None:
     app = ModuleType("app")
     core = ModuleType("app.core")
     config = ModuleType("app.core.config")
+    event = ModuleType("app.core.event")
+    module = ModuleType("app.core.module")
+    helper = ModuleType("app.helper")
+    interaction = ModuleType("app.helper.interaction")
     plugins = ModuleType("app.plugins")
     schemas = ModuleType("app.schemas")
     schema_types = ModuleType("app.schemas.types")
@@ -46,17 +81,31 @@ def _install_moviepilot_stubs() -> None:
     plugins._PluginBase = _PluginBase
     schemas.Response = _Response
     schemas.NotificationType = _NotificationType
+    schemas.MessageChannel = _MessageChannel
     schema_types.NotificationType = _NotificationType
+    schema_types.EventType = _EventType
+    schema_types.MessageChannel = _MessageChannel
+    event.Event = _Event
+    event.eventmanager = _EventManager()
+    module.ModuleManager = _ModuleManager
+    interaction.plugin_input_interaction_manager = _InteractionManager()
 
     app.core = core
     app.plugins = plugins
     app.schemas = schemas
     core.config = config
+    core.event = event
+    core.module = module
+    app.helper = helper
 
     for name, module in {
         "app": app,
         "app.core": core,
         "app.core.config": config,
+        "app.core.event": event,
+        "app.core.module": module,
+        "app.helper": helper,
+        "app.helper.interaction": interaction,
         "app.plugins": plugins,
         "app.schemas": schemas,
         "app.schemas.types": schema_types,

@@ -18,8 +18,12 @@ except ImportError:  # MoviePilot provides FastAPI; isolated plugin tests do not
 
 from app import schemas
 from app.core.config import settings
+from app.core.event import Event, eventmanager
+from app.core.module import ModuleManager
+from app.helper.interaction import plugin_input_interaction_manager
 from app.plugins import _PluginBase
-from app.schemas import NotificationType
+from app.schemas import MessageChannel, NotificationType
+from app.schemas.types import EventType
 
 from .browser import BrowserManager, OperationResult
 from .models import BrowserState, MediaRequest, NoteContext, Resolution
@@ -28,7 +32,12 @@ from .notifications import enqueue_pause_notification, flush_notification_outbox
 from .repository import RequestRepository
 from .resolver import MediaResolver
 from .service import AssistantService
-from .templates import DEFAULT_TEMPLATES, REPLY_CATEGORY_STATUSES, ReplyTemplates
+from .templates import (
+    DEFAULT_TEMPLATES,
+    LEGACY_DEFAULT_TEMPLATES,
+    REPLY_CATEGORY_STATUSES,
+    ReplyTemplates,
+)
 from .xhs import XhsGateway
 from .xhs_contracts import parse_authorized_ids
 
@@ -56,6 +65,15 @@ _REPLY_CATEGORY_LABELS = {
 }
 _REQUEST_ACTION_STATUSES = frozenset(
     {"NEW", "FAILED", "NEED_CONFIRMATION", "DRY_RUN_MATCHED"}
+)
+_REPLY_ACTION_STATUSES = frozenset(
+    {
+        "SUBSCRIBED",
+        "ALREADY_SUBSCRIBED",
+        "ALREADY_IN_LIBRARY",
+        "NEED_CONFIRMATION",
+        "FAILED",
+    }
 )
 _SITE_URLS = {
     "xiaohongshu": "https://www.xiaohongshu.com",
@@ -117,7 +135,7 @@ class XhsMovieAssistant(_PluginBase):
     plugin_name = "小红书影视助手"
     plugin_desc = "从授权账号的小红书 @ 请求识别影视作品并交给 MoviePilot 订阅。"
     plugin_icon = "xhsmovieassistant.png"
-    plugin_version = "0.1.8"
+    plugin_version = "0.1.9"
     plugin_author = "s450586793"
     author_url = "https://github.com/s450586793/MoviePilot-XhsMovieAssistant"
     plugin_config_prefix = "xhsmovieassistant_"
@@ -195,6 +213,83 @@ class XhsMovieAssistant(_PluginBase):
         return self._enabled
 
     @staticmethod
+    def get_command() -> list[dict[str, Any]]:
+        """Register a durable fallback for lost WeChat input sessions."""
+        return [
+            {
+                "cmd": "/xhs_confirm",
+                "event": EventType.PluginAction,
+                "desc": "确认小红书影视请求",
+                "category": "订阅",
+                "data": {"action": "xhs_confirm"},
+            }
+        ]
+
+    @eventmanager.register(EventType.MessageAction)
+    def handle_confirmation_input(self, event: Event) -> None:
+        """Consume one MoviePilot-routed WeChat clarification."""
+        data = getattr(event, "event_data", None)
+        if not self._enabled or self._service is None or not isinstance(data, Mapping):
+            return
+        if data.get("plugin_id") != self.__class__.__name__:
+            return
+        if data.get("channel") is not MessageChannel.Wechat:
+            return
+        user_id = str(data.get("userid") or "").strip()
+        source = str(data.get("source") or "").strip()
+        if (user_id, source) not in self._wechat_confirmation_targets():
+            return
+        if not str(data.get("text") or "").startswith("plugin_input|"):
+            return
+        payload = data.get("payload")
+        if not isinstance(payload, Mapping):
+            return
+        request_id = payload.get("request_id")
+        clarification = str(data.get("input_text") or "").strip()
+        if (
+            isinstance(request_id, bool)
+            or not isinstance(request_id, int)
+            or request_id < 1
+            or not clarification
+        ):
+            return
+        self._confirm_request(
+            request_id,
+            clarification,
+            channel=MessageChannel.Wechat,
+            source=source,
+            user_id=user_id,
+        )
+
+    @eventmanager.register(EventType.PluginAction)
+    def handle_confirmation_command(self, event: Event) -> None:
+        """Handle `/xhs_confirm ID title/year/type` from WeChat admins."""
+        data = getattr(event, "event_data", None)
+        if not self._enabled or self._service is None or not isinstance(data, Mapping):
+            return
+        if data.get("action") != "xhs_confirm":
+            return
+        if data.get("channel") is not MessageChannel.Wechat:
+            return
+        user_id = str(data.get("user") or "").strip()
+        source = str(data.get("source") or "").strip()
+        if (user_id, source) not in self._wechat_confirmation_targets():
+            return
+        parts = str(data.get("arg_str") or "").strip().split(maxsplit=1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            return
+        request_id = int(parts[0])
+        if request_id < 1 or not parts[1].strip():
+            return
+        self._confirm_request(
+            request_id,
+            parts[1].strip(),
+            channel=MessageChannel.Wechat,
+            source=source,
+            user_id=user_id,
+        )
+
+    @staticmethod
     def get_render_mode() -> tuple[str, str]:
         """Use MoviePilot's Vue federation host for configuration and detail pages."""
         return "vue", "dist/assets"
@@ -236,6 +331,7 @@ class XhsMovieAssistant(_PluginBase):
             ("/requests/{request_id}/reprocess", self.reprocess, "重新处理请求"),
             ("/requests/{request_id}/ignore", self.ignore, "忽略请求"),
             ("/requests/{request_id}/manual", self.manual_resolve, "人工确认影视作品"),
+            ("/requests/{request_id}/reply", self.reply, "补发小红书回复"),
             ("/test/ai", self.test_ai, "测试 AI 识别"),
             ("/test/moviepilot", self.test_moviepilot, "测试 MoviePilot 匹配"),
             ("/test/notification", self.test_notification, "测试 MoviePilot 通知"),
@@ -610,6 +706,18 @@ class XhsMovieAssistant(_PluginBase):
             return self._failure("Request could not be manually resolved")
 
     @_serialized_management
+    def reply(
+        self,
+        request_id: int,
+        request: Request = None,
+        apikey: str | None = None,
+    ) -> Any:
+        """Retry one pending public reply through the service boundary."""
+        if not self._authorized(request, apikey):
+            return self._unauthorized()
+        return self._service_action("reply", request_id)
+
+    @_serialized_management
     def test_ai(
         self,
         body: dict[str, Any] | None = None,
@@ -724,7 +832,11 @@ class XhsMovieAssistant(_PluginBase):
             _number(values.get("confidence_threshold"), 0.85), 0, 1
         )
         self._template_values = {
-            status: value
+            status: (
+                default
+                if value == LEGACY_DEFAULT_TEMPLATES.get(status)
+                else value
+            )
             for status, default in DEFAULT_TEMPLATES.items()
             if isinstance(
                 (value := values.get(f"template_{status}", default)), str
@@ -768,6 +880,7 @@ class XhsMovieAssistant(_PluginBase):
                 self._template_values,
                 enabled_categories=self._reply_categories,
             ),
+            request_confirmation=self._arm_wechat_confirmation,
             is_cancelled=lambda: (
                 stop_event.is_set() or generation != self._generation
             ),
@@ -959,6 +1072,78 @@ class XhsMovieAssistant(_PluginBase):
     def _notify(self, title: str, text: str) -> None:
         self.post_message(mtype=NotificationType.Plugin, title=title, text=text)
 
+    def _arm_wechat_confirmation(self, request_id: int) -> None:
+        """Route each configured WeChat admin's next text to this request."""
+        for user_id, source in sorted(self._wechat_confirmation_targets()):
+            try:
+                plugin_input_interaction_manager.create_or_replace(
+                    user_id=user_id,
+                    plugin_id=self.__class__.__name__,
+                    channel=MessageChannel.Wechat,
+                    source=source,
+                    username=None,
+                    timeout_seconds=24 * 60 * 60,
+                    payload={"request_id": request_id},
+                )
+            except Exception:
+                continue
+
+    def _confirm_request(
+        self,
+        request_id: int,
+        clarification: str,
+        *,
+        channel: MessageChannel,
+        source: str,
+        user_id: str,
+    ) -> None:
+        """Serialize one clarification and report only a generic failure."""
+        service = self._service
+        if service is None:
+            return
+        try:
+            with self._activity_lock:
+                service.confirm_from_text(request_id, clarification)
+        except Exception:
+            try:
+                self.post_message(
+                    channel=channel,
+                    source=source,
+                    userid=user_id,
+                    title="小红书影视确认失败",
+                    text=(
+                        f"请求 #{request_id} 未能完成确认。"
+                        "请使用兜底命令重试，或在插件页人工确认。"
+                    ),
+                )
+            except Exception:
+                pass
+
+    @staticmethod
+    def _wechat_confirmation_targets() -> frozenset[tuple[str, str]]:
+        """Return enabled WeChat admin/source pairs, failing closed."""
+        try:
+            module = ModuleManager().get_running_module("WechatModule")
+            configs = module.get_configs() if module is not None else {}
+        except Exception:
+            return frozenset()
+        if not isinstance(configs, Mapping):
+            return frozenset()
+
+        targets: set[tuple[str, str]] = set()
+        for key, item in configs.items():
+            source = str(getattr(item, "name", None) or key or "").strip()
+            config = getattr(item, "config", None)
+            if not source or not isinstance(config, Mapping):
+                continue
+            raw_admins = str(config.get("WECHAT_ADMINS") or "").replace("\n", ",")
+            targets.update(
+                (admin, source)
+                for value in raw_admins.split(",")
+                if (admin := value.strip())
+            )
+        return frozenset(targets)
+
     def _request_rows(self) -> list[dict[str, Any]]:
         if self._repository is None:
             return []
@@ -989,7 +1174,12 @@ class XhsMovieAssistant(_PluginBase):
     ) -> list[dict[str, Any]]:
         actions = []
         for row in rows:
-            if row["status"] not in _REQUEST_ACTION_STATUSES:
+            manageable = row["status"] in _REQUEST_ACTION_STATUSES
+            replyable = (
+                row["status"] in _REPLY_ACTION_STATUSES
+                and row["reply"] == "PENDING"
+            )
+            if not manageable and not replyable:
                 continue
             request_id = int(row["id"])
             manual_params = {
@@ -1016,24 +1206,42 @@ class XhsMovieAssistant(_PluginBase):
                             },
                             "text": f"#{request_id} {row['title']}",
                         },
-                        _action_button(
-                            "重新处理",
-                            "mdi-replay",
-                            f"/requests/{request_id}/reprocess",
-                            size="small",
+                        *(
+                            [
+                                _action_button(
+                                    "重新处理",
+                                    "mdi-replay",
+                                    f"/requests/{request_id}/reprocess",
+                                    size="small",
+                                ),
+                                _action_button(
+                                    "忽略",
+                                    "mdi-eye-off-outline",
+                                    f"/requests/{request_id}/ignore",
+                                    size="small",
+                                ),
+                                _action_button(
+                                    "人工确认",
+                                    "mdi-check-decagram-outline",
+                                    f"/requests/{request_id}/manual",
+                                    params=manual_params,
+                                    size="small",
+                                ),
+                            ]
+                            if manageable
+                            else []
                         ),
-                        _action_button(
-                            "忽略",
-                            "mdi-eye-off-outline",
-                            f"/requests/{request_id}/ignore",
-                            size="small",
-                        ),
-                        _action_button(
-                            "人工确认",
-                            "mdi-check-decagram-outline",
-                            f"/requests/{request_id}/manual",
-                            params=manual_params,
-                            size="small",
+                        *(
+                            [
+                                _action_button(
+                                    "补发小红书回复",
+                                    "mdi-reply",
+                                    f"/requests/{request_id}/reply",
+                                    size="small",
+                                )
+                            ]
+                            if replyable
+                            else []
                         ),
                     ],
                 }

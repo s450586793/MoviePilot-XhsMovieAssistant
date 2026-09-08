@@ -9,11 +9,15 @@ from .models import ProcessingResult
 
 
 DEFAULT_TEMPLATES = {
-    "SUBSCRIBED": "检测到{media_type}《{title}》{year_text}{season_text}，已推送订阅。",
+    "SUBSCRIBED": "收到，已安排订阅。",
     "ALREADY_SUBSCRIBED": "《{title}》{year_text}{season_text}已经订阅，无需重复添加。",
     "ALREADY_IN_LIBRARY": "《{title}》{year_text}{season_text}已经在媒体库中。",
-    "NEED_CONFIRMATION": "暂时无法确定这篇笔记中的具体影视作品，请人工确认。",
+    "NEED_CONFIRMATION": "收到，影视不明确，请明示。",
     "FAILED": "本次订阅处理失败，详情已通过 MoviePilot 通知发送。",
+}
+LEGACY_DEFAULT_TEMPLATES = {
+    "SUBSCRIBED": "检测到{media_type}《{title}》{year_text}{season_text}，已推送订阅。",
+    "NEED_CONFIRMATION": "暂时无法确定这篇笔记中的具体影视作品，请人工确认。",
 }
 REPLY_CATEGORY_STATUSES = {
     "success": frozenset({"SUBSCRIBED"}),

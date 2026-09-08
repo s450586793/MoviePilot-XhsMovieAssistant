@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Callable, Collection
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from .models import (
     BrowserState,
+    MediaMatch,
     MediaRequest,
     ProcessingResult,
     ReplyStatus,
@@ -48,6 +50,13 @@ _REPLY_PAUSE_CODES = {
     "SESSION_EXPIRED",
     "XHS_RISK_CONTROL",
 }
+_REPLYABLE_STATUSES = {
+    RequestStatus.SUBSCRIBED,
+    RequestStatus.ALREADY_SUBSCRIBED,
+    RequestStatus.ALREADY_IN_LIBRARY,
+    RequestStatus.NEED_CONFIRMATION,
+    RequestStatus.FAILED,
+}
 
 
 class AssistantService:
@@ -68,6 +77,7 @@ class AssistantService:
         replies_enabled: bool = False,
         notifications_enabled: bool = True,
         templates: ReplyTemplates | None = None,
+        request_confirmation: Callable[[int], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         if (
@@ -92,6 +102,7 @@ class AssistantService:
         self.replies_enabled = replies_enabled
         self.notifications_enabled = notifications_enabled
         self.templates = templates or ReplyTemplates()
+        self.request_confirmation = request_confirmation
         self._is_cancelled = is_cancelled or (lambda: False)
         self._consecutive_poll_failures = 0
 
@@ -216,6 +227,62 @@ class AssistantService:
             None,
             resolution,
         )
+
+    def confirm_from_text(
+        self,
+        request_id: int,
+        clarification: str,
+    ) -> ProcessingResult:
+        """Resolve one pending request from an authorized WeChat clarification."""
+        self._flush_notifications()
+        stored = self._require_authorized(request_id)
+        if stored.status is not RequestStatus.NEED_CONFIRMATION:
+            raise InvalidTransition("Request is not awaiting NEED_CONFIRMATION")
+        if stored.note is None:
+            raise InvalidTransition("Request has no durable note context")
+        clarification = "".join(
+            character
+            for character in str(clarification or "")
+            if character in "\n\t" or unicodedata.category(character) != "Cc"
+        ).strip()[: TEXT_LIMITS["comment"]]
+        if not clarification:
+            raise ValueError("clarification must be a non-empty string")
+
+        self.repository.requeue(request_id, authenticated=True)
+        media_request = self._media_request(stored)
+        self._transition(request_id, RequestStatus.FETCHED, note=stored.note)
+        self._transition(request_id, RequestStatus.RESOLVING)
+        try:
+            self._ensure_active(request_id)
+            resolution = self.resolver.resolve_confirmation(
+                media_request,
+                clarification,
+            )
+        except _ServiceCancelled:
+            raise
+        except Exception:
+            return self._complete(
+                request_id,
+                None,
+                self._fail(request_id, "UPSTREAM_ERROR"),
+            )
+        return self._process_resolution(request_id, None, resolution)
+
+    def reply(self, request_id: int) -> StoredRequest:
+        """Retry one pending public reply after refreshing its transient token."""
+        self._flush_notifications()
+        stored = self._require_authorized(request_id)
+        if not self.replies_enabled:
+            raise InvalidTransition("XHS replies are disabled")
+        if stored.status not in _REPLYABLE_STATUSES:
+            raise InvalidTransition(f"Cannot reply for {stored.status.value}")
+        if stored.reply_status is not ReplyStatus.PENDING:
+            raise InvalidTransition("Reply delivery is already final")
+        result = self._stored_result(stored)
+        if self.templates.render(result) is None:
+            raise InvalidTransition("Reply category is disabled")
+        self._reply_latest(request_id, result)
+        return self._require_request(request_id)
 
     def resume(self) -> None:
         """Clear a persisted browser pause and its notification marker."""
@@ -360,6 +427,14 @@ class AssistantService:
         resolution: Resolution,
     ) -> ProcessingResult:
         self._transition(request_id, status, resolution=resolution)
+        if (
+            status is RequestStatus.NEED_CONFIRMATION
+            and self.request_confirmation is not None
+        ):
+            try:
+                self.request_confirmation(request_id)
+            except Exception:
+                pass
         return self._complete(
             request_id,
             mention,
@@ -380,8 +455,37 @@ class AssistantService:
             return result
         if mention is not None:
             self._reply(request_id, mention, result)
+        elif self.replies_enabled and self.templates.render(result) is not None:
+            self._reply_latest(request_id, result)
         self._flush_notifications()
         return result
+
+    def _reply_latest(
+        self,
+        request_id: int,
+        result: ProcessingResult,
+    ) -> None:
+        stored = self._require_request(request_id)
+        if stored.reply_status is not ReplyStatus.PENDING:
+            return
+        try:
+            self._ensure_active(request_id)
+            mentions = self.xhs.fetch_mentions(limit=20)
+        except _ServiceCancelled:
+            return
+        except XhsPausedError as error:
+            self._mark_reply_failed(request_id)
+            self._pause(error.code)
+            return
+        except Exception:
+            self._mark_reply_failed(request_id)
+            return
+
+        mention = self._matching_mention(stored, mentions)
+        if mention is None:
+            self._mark_reply_failed(request_id)
+            return
+        self._reply(request_id, mention, result)
 
     def _reply(
         self,
@@ -434,6 +538,16 @@ class AssistantService:
         if outcome.code in _REPLY_PAUSE_CODES:
             self._pause(outcome.code)
 
+    def _mark_reply_failed(self, request_id: int) -> None:
+        try:
+            self.repository.mark_reply(
+                request_id,
+                status=ReplyStatus.FAILED,
+                business_notifications_enabled=self.notifications_enabled,
+            )
+        except InvalidTransition:
+            pass
+
     def _pause(self, code: str) -> None:
         enqueue_pause_notification(self.repository, code)
         self._flush_notifications()
@@ -473,6 +587,90 @@ class AssistantService:
         if stored.sender_user_id not in self.authorized_user_ids:
             raise PermissionError("Request does not belong to an authorized sender")
         return stored
+
+    @staticmethod
+    def _matching_mention(
+        stored: StoredRequest,
+        mentions: Collection[TransientMention],
+    ) -> TransientMention | None:
+        candidates = [
+            mention
+            for mention in mentions
+            if mention.mention_id == stored.mention_id
+        ]
+        if len(candidates) != 1:
+            return None
+        mention = candidates[0]
+        if (
+            mention.sender_user_id != stored.sender_user_id
+            or mention.comment_id != stored.comment_id
+            or mention.note_id != stored.note_id
+        ):
+            return None
+        return mention
+
+    @staticmethod
+    def _media_request(stored: StoredRequest) -> MediaRequest:
+        if stored.note is None:
+            raise InvalidTransition("Request has no durable note context")
+        return MediaRequest(
+            request_id=f"xhs_{stored.mention_id}",
+            source="xiaohongshu",
+            intent="subscribe",
+            trigger_comment=sanitize_text(
+                stored.comment_text,
+                TEXT_LIMITS["comment"],
+            ),
+            note=stored.note,
+        )
+
+    @staticmethod
+    def _stored_result(stored: StoredRequest) -> ProcessingResult:
+        media_type = (
+            stored.media_type
+            if stored.media_type in {"movie", "tv", "unknown"}
+            else "unknown"
+        )
+        resolution_status = "need_confirmation"
+        if stored.status is RequestStatus.NOT_MEDIA:
+            resolution_status = "not_media"
+        elif stored.title and media_type in {"movie", "tv"}:
+            resolution_status = "resolved"
+        resolution = Resolution(
+            status=resolution_status,
+            title=stored.title or "",
+            original_title=stored.original_title or "",
+            media_type=media_type,
+            year=stored.year,
+            season=stored.season,
+            confidence=stored.confidence if stored.confidence is not None else 0,
+            reason=stored.resolution_reason or "",
+        )
+        match = None
+        if (
+            stored.title
+            and media_type in {"movie", "tv"}
+            and stored.media_source
+            and stored.media_source_id
+        ):
+            match = MediaMatch(
+                title=stored.title,
+                original_title=stored.original_title or "",
+                media_type=media_type,
+                year=stored.year,
+                season=stored.season,
+                source=stored.media_source,
+                source_id=stored.media_source_id,
+                tmdb_id=stored.tmdb_id,
+                score=stored.score,
+            )
+        return ProcessingResult(
+            status=stored.status,
+            message=stored.error or "",
+            resolution=resolution,
+            match=match,
+            subscription_id=stored.subscription_id,
+        )
 
     def _note_url(self, note_id: str) -> str:
         parsed = urlsplit(self.site_url)

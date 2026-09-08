@@ -224,6 +224,7 @@ def test_note_snapshot_strips_navigation_credentials_from_url(tmp_path) -> None:
 def test_requeue_requires_authentication_and_only_permitted_terminal_states(tmp_path) -> None:
     repo = RequestRepository(tmp_path / "app.db")
     saved = repo.save_mention(make_mention())
+    repo.mark_reply(saved.request.id, "reply-old")
     failed = repo.transition(saved.request.id, RequestStatus.FAILED, error="temporary")
 
     with pytest.raises(PermissionError):
@@ -233,6 +234,9 @@ def test_requeue_requires_authentication_and_only_permitted_terminal_states(tmp_
     assert requeued.status is RequestStatus.NEW
     assert requeued.error is None
     assert requeued.attempt_count == failed.attempt_count + 1
+    assert requeued.reply_status is ReplyStatus.PENDING
+    assert requeued.reply_id is None
+    assert requeued.replied_at is None
 
     with pytest.raises(InvalidTransition):
         repo.requeue(saved.request.id, authenticated=True)

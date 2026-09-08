@@ -176,7 +176,26 @@ def _request_result_content(code: str, request: StoredRequest | None) -> str:
         return "\n".join(["🎬 已存在", *media, "已经订阅，无需重复添加。"])
     if code == "ALREADY_IN_LIBRARY":
         return "\n".join(["🎬 已存在", *media, "已经在媒体库中，无需重复添加。"])
-    if code in {"NOT_MEDIA", "NEED_CONFIRMATION"}:
+    if code == "NEED_CONFIRMATION":
+        request_line = (
+            f"请求 #{request.id}"
+            if request is not None
+            else "请求号暂时不可用"
+        )
+        return "\n".join(
+            [
+                "⚠️ 无法确定影视作品",
+                request_line,
+                *_note_lines(request),
+                "请直接回复明确的片名、年份和电影/剧集。",
+                (
+                    f"兜底命令：/xhs_confirm {request.id} 片名 年份 电影/剧集"
+                    if request is not None
+                    else "也可在插件管理页人工确认。"
+                ),
+            ]
+        )
+    if code == "NOT_MEDIA":
         return "\n".join(
             ["⚠️ 无法确定影视作品", *_note_lines(request), "需要人工确认。"]
         )

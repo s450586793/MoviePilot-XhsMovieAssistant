@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
@@ -137,7 +138,9 @@ class FakeXhs:
 class FakeResolver:
     def __init__(self) -> None:
         self.outcomes: list[Resolution | Exception] = []
+        self.confirmation_outcomes: list[Resolution | Exception] = []
         self.requests: list[object] = []
+        self.confirmation_requests: list[tuple[object, str]] = []
         self.repository: RequestRepository | None = None
         self.call_statuses: list[RequestStatus] = []
 
@@ -150,6 +153,17 @@ class FakeResolver:
         if self.repository is not None:
             self.call_statuses.append(self.repository.recent(1)[0].status)
         outcome = self.outcomes.pop(0) if self.outcomes else resolution()
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def resolve_confirmation(self, request: object, clarification: str) -> Resolution:
+        self.confirmation_requests.append((request, clarification))
+        outcome = (
+            self.confirmation_outcomes.pop(0)
+            if self.confirmation_outcomes
+            else resolution()
+        )
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -202,6 +216,7 @@ def build_service(
     confidence_threshold: float = 0.85,
     notify: Callable[[str, str], None] | None = None,
     notifications_enabled: bool = True,
+    request_confirmation: Callable[[int], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> tuple[
     AssistantService,
@@ -227,6 +242,7 @@ def build_service(
         enable_subscription=enable_subscription,
         replies_enabled=replies_enabled,
         notifications_enabled=notifications_enabled,
+        request_confirmation=request_confirmation,
         confidence_threshold=confidence_threshold,
         is_cancelled=is_cancelled,
     )
@@ -961,6 +977,204 @@ def test_manual_resolution_skips_xhs_and_llm_but_still_matches_and_submits(
     assert resolver.calls == 1
     assert len(moviepilot.match_calls) == 1
     assert len(moviepilot.submit_calls) == 1
+
+
+def test_manual_resolution_replies_again_for_the_new_processing_attempt(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, moviepilot, _ = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+        replies_enabled=True,
+    )
+    xhs.mentions = [mention()]
+    xhs.reply_outcomes = [
+        ReplyOutcome(success=True, reply_id="reply-confirmation"),
+        ReplyOutcome(success=True, reply_id="reply-subscribed"),
+    ]
+    resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+
+    result = service.manual_resolve(request_id, resolution())
+
+    stored = repository.get(request_id)
+    assert result.status is RequestStatus.SUBSCRIBED
+    assert xhs.fetch_mentions_calls == 2
+    assert xhs.reply_call_statuses == [
+        RequestStatus.NEED_CONFIRMATION,
+        RequestStatus.SUBSCRIBED,
+    ]
+    assert stored is not None
+    assert stored.reply_status is ReplyStatus.SENT
+    assert stored.reply_id == "reply-subscribed"
+    assert b"transient-token" not in (tmp_path / "assistant.db").read_bytes()
+
+
+def test_pending_terminal_result_can_be_replied_after_replies_are_enabled(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, _, moviepilot, _ = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+        replies_enabled=False,
+    )
+    xhs.mentions = [mention()]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+    service.replies_enabled = True
+    xhs.reply_outcomes = [ReplyOutcome(success=True, reply_id="reply-late")]
+
+    replied = service.reply(request_id)
+
+    assert replied.reply_status is ReplyStatus.SENT
+    assert replied.reply_id == "reply-late"
+    assert xhs.fetch_mentions_calls == 2
+    assert xhs.reply_call_statuses == [RequestStatus.SUBSCRIBED]
+
+
+def test_need_confirmation_requests_wechat_input_for_the_durable_request(
+    tmp_path: Path,
+) -> None:
+    confirmations: list[int] = []
+    service, repository, xhs, resolver, _, notifications = build_service(
+        tmp_path / "assistant.db",
+        request_confirmation=confirmations.append,
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
+
+    result = service.poll_once()[0]
+
+    request_id = repository.recent(1)[0].id
+    assert result.status is RequestStatus.NEED_CONFIRMATION
+    assert confirmations == [request_id]
+    assert notifications == [
+        (
+            "小红书影视助手",
+            "⚠️ 无法确定影视作品\n"
+            f"请求 #{request_id}\n"
+            "小红书：星际穿越\n"
+            "https://www.xiaohongshu.com/explore/note-m1\n"
+            "请直接回复明确的片名、年份和电影/剧集。\n"
+            f"兜底命令：/xhs_confirm {request_id} 片名 年份 电影/剧集",
+        )
+    ]
+
+
+def test_wechat_clarification_reuses_the_manual_confirmation_pipeline(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, moviepilot, _ = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
+    resolver.confirmation_outcomes = [resolution()]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+
+    result = service.confirm_from_text(
+        request_id,
+        "星际穿越，2014，电影",
+    )
+
+    stored = repository.get(request_id)
+    assert result.status is RequestStatus.SUBSCRIBED
+    assert stored is not None
+    assert stored.status is RequestStatus.SUBSCRIBED
+    assert stored.subscription_id == "42"
+    assert len(resolver.confirmation_requests) == 1
+    media_request, clarification = resolver.confirmation_requests[0]
+    assert isinstance(media_request, MediaRequest)
+    assert media_request.note.title == "星际穿越"
+    assert clarification == "星际穿越，2014，电影"
+
+
+def test_wechat_clarification_only_accepts_a_pending_authorized_confirmation(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, _, _, _ = build_service(tmp_path / "assistant.db")
+    xhs.mentions = [mention()]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+
+    with pytest.raises(InvalidTransition, match="NEED_CONFIRMATION"):
+        service.confirm_from_text(request_id, "星际穿越，2014，电影")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sender_user_id", "other-user"),
+        ("comment_id", "other-comment"),
+        ("note_id", "other-note"),
+    ],
+)
+def test_reply_refuses_a_notification_whose_durable_identity_changed(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    service, repository, xhs, _, moviepilot, _ = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+        replies_enabled=False,
+    )
+    original = mention()
+    xhs.mentions = [original]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+    service.replies_enabled = True
+    xhs.mentions = [replace(original, **{field: value})]
+
+    replied = service.reply(request_id)
+
+    assert replied.status is RequestStatus.SUBSCRIBED
+    assert replied.reply_status is ReplyStatus.FAILED
+    assert xhs.reply_calls == 0
+
+
+def test_manual_resolution_keeps_the_subscription_when_reply_refresh_fails(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, moviepilot, _ = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+        replies_enabled=False,
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+    service.replies_enabled = True
+    xhs.mention_failures = [XhsContractError("notification unavailable")]
+
+    result = service.manual_resolve(request_id, resolution())
+
+    stored = repository.get(request_id)
+    assert result.status is RequestStatus.SUBSCRIBED
+    assert stored is not None
+    assert stored.status is RequestStatus.SUBSCRIBED
+    assert stored.subscription_id == "42"
+    assert stored.reply_status is ReplyStatus.FAILED
+    assert xhs.reply_calls == 0
 
 
 def test_manual_resolution_rechecks_current_authorization_before_moviepilot(

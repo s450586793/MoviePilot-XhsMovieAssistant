@@ -348,6 +348,9 @@ class RequestRepository:
                 {
                     "status": RequestStatus.NEW.value,
                     "error": None,
+                    "reply_status": ReplyStatus.PENDING.value,
+                    "reply_id": None,
+                    "replied_at": None,
                     "attempt_count": row["attempt_count"] + 1,
                     "updated_at": _format_datetime(now or _utc_now()),
                 },
