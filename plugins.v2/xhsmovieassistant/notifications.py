@@ -54,6 +54,7 @@ def flush_notification_outbox(
     *,
     business_enabled: bool,
     is_cancelled: Callable[[], bool],
+    on_delivered: Callable[[OutboxNotification, str, str], None] | None = None,
 ) -> None:
     """Attempt pending events and acknowledge only confirmed callback success."""
     if is_cancelled():
@@ -84,6 +85,11 @@ def flush_notification_outbox(
             repository.record_notification_attempt(event.id, delivered=True)
         except Exception:
             continue
+        if on_delivered is not None:
+            try:
+                on_delivered(event, title, text)
+            except Exception:
+                pass
         if event.kind == "PAUSE":
             _mark_pause_notified(repository, event)
 

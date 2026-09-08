@@ -1045,7 +1045,9 @@ def test_need_confirmation_requests_wechat_input_for_the_durable_request(
     confirmations: list[int] = []
     service, repository, xhs, resolver, _, notifications = build_service(
         tmp_path / "assistant.db",
-        request_confirmation=confirmations.append,
+        request_confirmation=lambda request_id, _title, _text: confirmations.append(
+            request_id
+        ),
     )
     xhs.mentions = [mention()]
     resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
@@ -1065,6 +1067,51 @@ def test_need_confirmation_requests_wechat_input_for_the_durable_request(
             "请直接回复明确的片名、年份和电影/剧集。\n"
             f"兜底命令：/xhs_confirm {request_id} 片名 年份 电影/剧集",
         )
+    ]
+
+
+def test_confirmation_input_is_not_requested_when_notifications_are_disabled(
+    tmp_path: Path,
+) -> None:
+    confirmations: list[int] = []
+    service, _, xhs, resolver, _, notifications = build_service(
+        tmp_path / "assistant.db",
+        notifications_enabled=False,
+        request_confirmation=lambda request_id, _title, _text: confirmations.append(
+            request_id
+        ),
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
+
+    assert service.poll_once()[0].status is RequestStatus.NEED_CONFIRMATION
+    assert confirmations == []
+    assert notifications == []
+
+
+def test_confirmation_input_is_not_requested_when_notification_delivery_fails(
+    tmp_path: Path,
+) -> None:
+    confirmations: list[int] = []
+
+    def broken_notify(_title: str, _text: str) -> None:
+        raise RuntimeError("notification unavailable")
+
+    service, repository, xhs, resolver, _, _ = build_service(
+        tmp_path / "assistant.db",
+        notify=broken_notify,
+        request_confirmation=lambda request_id, _title, _text: confirmations.append(
+            request_id
+        ),
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
+
+    assert service.poll_once()[0].status is RequestStatus.NEED_CONFIRMATION
+    assert confirmations == []
+    pending = repository.pending_notifications(20)
+    assert [(event.code, event.attempt_count) for event in pending] == [
+        ("NEED_CONFIRMATION", 1)
     ]
 
 

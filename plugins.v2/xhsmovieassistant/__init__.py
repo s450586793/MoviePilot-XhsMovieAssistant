@@ -26,7 +26,7 @@ from app.schemas import MessageChannel, NotificationType
 from app.schemas.types import EventType
 
 from .browser import BrowserManager, OperationResult
-from .models import BrowserState, MediaRequest, NoteContext, Resolution
+from .models import BrowserState, MediaRequest, NoteContext, RequestStatus, Resolution
 from .moviepilot import MoviePilotGateway
 from .notifications import enqueue_pause_notification, flush_notification_outbox
 from .repository import RequestRepository
@@ -241,21 +241,34 @@ class XhsMovieAssistant(_PluginBase):
             return
         if not str(data.get("text") or "").startswith("plugin_input|"):
             return
+        input_text = str(data.get("input_text") or "").strip()
+        command = self._parse_confirmation_input_command(input_text)
+        if input_text.split(maxsplit=1)[0:1] == ["/xhs_confirm"]:
+            if command is not None:
+                request_id, clarification = command
+                self._confirm_request(
+                    request_id,
+                    clarification,
+                    channel=MessageChannel.Wechat,
+                    source=source,
+                    user_id=user_id,
+                )
+            self._restore_consumed_confirmation_input(data, user_id, source)
+            return
         payload = data.get("payload")
         if not isinstance(payload, Mapping):
             return
         request_id = payload.get("request_id")
-        clarification = str(data.get("input_text") or "").strip()
         if (
             isinstance(request_id, bool)
             or not isinstance(request_id, int)
             or request_id < 1
-            or not clarification
+            or not input_text
         ):
             return
         self._confirm_request(
             request_id,
-            clarification,
+            input_text,
             channel=MessageChannel.Wechat,
             source=source,
             user_id=user_id,
@@ -275,15 +288,13 @@ class XhsMovieAssistant(_PluginBase):
         source = str(data.get("source") or "").strip()
         if (user_id, source) not in self._wechat_confirmation_targets():
             return
-        parts = str(data.get("arg_str") or "").strip().split(maxsplit=1)
-        if len(parts) != 2 or not parts[0].isdigit():
+        command = self._parse_confirmation_arguments(data.get("arg_str"))
+        if command is None:
             return
-        request_id = int(parts[0])
-        if request_id < 1 or not parts[1].strip():
-            return
+        request_id, clarification = command
         self._confirm_request(
             request_id,
-            parts[1].strip(),
+            clarification,
             channel=MessageChannel.Wechat,
             source=source,
             user_id=user_id,
@@ -1072,21 +1083,80 @@ class XhsMovieAssistant(_PluginBase):
     def _notify(self, title: str, text: str) -> None:
         self.post_message(mtype=NotificationType.Plugin, title=title, text=text)
 
-    def _arm_wechat_confirmation(self, request_id: int) -> None:
-        """Route each configured WeChat admin's next text to this request."""
+    def _arm_wechat_confirmation(
+        self,
+        request_id: int,
+        title: str = "小红书影视助手",
+        text: str = "请直接回复明确的片名、年份和电影/剧集。",
+    ) -> None:
+        """Prompt each admin and only then arm that admin's next text."""
         for user_id, source in sorted(self._wechat_confirmation_targets()):
             try:
-                plugin_input_interaction_manager.create_or_replace(
-                    user_id=user_id,
-                    plugin_id=self.__class__.__name__,
+                self.post_message(
+                    mtype=NotificationType.Plugin,
+                    title=title,
+                    text=text,
                     channel=MessageChannel.Wechat,
                     source=source,
-                    username=None,
-                    timeout_seconds=24 * 60 * 60,
-                    payload={"request_id": request_id},
+                    userid=user_id,
                 )
             except Exception:
                 continue
+            self._create_wechat_confirmation_input(request_id, user_id, source)
+
+    @staticmethod
+    def _parse_confirmation_arguments(value: Any) -> tuple[int, str] | None:
+        parts = str(value or "").strip().split(maxsplit=1)
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].strip():
+            return None
+        request_id = int(parts[0])
+        if request_id < 1:
+            return None
+        return request_id, parts[1].strip()
+
+    @classmethod
+    def _parse_confirmation_input_command(cls, value: str) -> tuple[int, str] | None:
+        parts = value.split(maxsplit=1)
+        if not parts or parts[0] != "/xhs_confirm":
+            return None
+        return cls._parse_confirmation_arguments(parts[1] if len(parts) == 2 else "")
+
+    def _restore_consumed_confirmation_input(
+        self, data: Mapping[str, Any], user_id: str, source: str
+    ) -> None:
+        payload = data.get("payload")
+        if not isinstance(payload, Mapping):
+            return
+        request_id = payload.get("request_id")
+        if (
+            isinstance(request_id, bool)
+            or not isinstance(request_id, int)
+            or request_id < 1
+            or self._repository is None
+        ):
+            return
+        try:
+            stored = self._repository.get(request_id)
+        except Exception:
+            return
+        if stored is not None and stored.status is RequestStatus.NEED_CONFIRMATION:
+            self._create_wechat_confirmation_input(request_id, user_id, source)
+
+    def _create_wechat_confirmation_input(
+        self, request_id: int, user_id: str, source: str
+    ) -> None:
+        try:
+            plugin_input_interaction_manager.create_or_replace(
+                user_id=user_id,
+                plugin_id=self.__class__.__name__,
+                channel=MessageChannel.Wechat,
+                source=source,
+                username=None,
+                timeout_seconds=24 * 60 * 60,
+                payload={"request_id": request_id},
+            )
+        except Exception:
+            pass
 
     def _confirm_request(
         self,

@@ -21,6 +21,7 @@ from .repository import (
     IdempotencyConflict,
     InvalidTransition,
     NewMention,
+    OutboxNotification,
     RequestNotFound,
     RequestRepository,
     StoredRequest,
@@ -77,7 +78,7 @@ class AssistantService:
         replies_enabled: bool = False,
         notifications_enabled: bool = True,
         templates: ReplyTemplates | None = None,
-        request_confirmation: Callable[[int], None] | None = None,
+        request_confirmation: Callable[[int, str, str], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         if (
@@ -427,14 +428,6 @@ class AssistantService:
         resolution: Resolution,
     ) -> ProcessingResult:
         self._transition(request_id, status, resolution=resolution)
-        if (
-            status is RequestStatus.NEED_CONFIRMATION
-            and self.request_confirmation is not None
-        ):
-            try:
-                self.request_confirmation(request_id)
-            except Exception:
-                pass
         return self._complete(
             request_id,
             mention,
@@ -568,7 +561,20 @@ class AssistantService:
             self.notify,
             business_enabled=self.notifications_enabled,
             is_cancelled=self._is_cancelled,
+            on_delivered=self._handle_delivered_notification,
         )
+
+    def _handle_delivered_notification(
+        self, event: OutboxNotification, title: str, text: str
+    ) -> None:
+        if (
+            event.kind != "REQUEST_RESULT"
+            or event.code != RequestStatus.NEED_CONFIRMATION.value
+            or event.request_id is None
+            or self.request_confirmation is None
+        ):
+            return
+        self.request_confirmation(event.request_id, title, text)
 
     def _ensure_active(self, request_id: int | None = None) -> None:
         if self._is_cancelled():

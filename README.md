@@ -197,7 +197,7 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.1.9` 发布验证结果为：Python `453 passed`、覆盖率 `88.51%`、Vue/Vitest
+当前 `v0.1.9` 发布验证结果为：Python `459 passed`、覆盖率 `88.54%`、Vue/Vitest
 `18 passed`、MoviePilot `v2.15.6` 隔离 import/route smoke 通过。该 smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 
