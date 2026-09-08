@@ -15,8 +15,14 @@ from .xhs_contracts import TransientMention, parse_mentions_payload
 
 _MENTIONS_PATH = "/api/sns/web/v1/you/mentions"
 _NOTIFICATION_LINK_SELECTOR = 'a[href="/notification"], a[href^="/notification?"]'
+_NOTIFICATION_CARD_SELECTOR = ".tabs-content-container > .container"
+_NOTIFICATION_CONTENT_SELECTOR = ".interaction-content"
+_NOTIFICATION_REPLY_SELECTOR = ".action-reply"
+_NOTIFICATION_INPUT_SELECTOR = "textarea.comment-input"
+_NOTIFICATION_SUBMIT_SELECTOR = "button.submit"
 _REPLY_SUBMIT_PATH = "/api/sns/web/v1/comment/post"
 _MENTIONS_TIMEOUT_MS = 20_000
+_NOTIFICATION_RENDER_TIMEOUT_MS = 3_000
 _NOTE_TIMEOUT_MS = 15_000
 _REPLY_SCROLL_ROUNDS = 10
 _REPLY_SCROLL_PIXELS = 900
@@ -80,49 +86,10 @@ class XhsGateway:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("limit must be between 1 and 20")
 
-        captured: dict[str, object] = {}
-
-        def on_response(response: Any) -> None:
-            if captured or not _is_mentions_response(response):
-                return
-            captured["status"] = _response_status(response)
-            try:
-                captured["payload"] = response.json()
-            except Exception:
-                captured["error"] = True
-
         try:
             with self._manager.session() as page:
-                notification_url = f"{self._manager.base_url}/notification"
-                rednote = urlsplit(self._manager.base_url).hostname == "www.rednote.com"
-                entry_url = self._manager.base_url if rednote else notification_url
-                navigation = page.goto(entry_url, wait_until="domcontentloaded")
-                _ensure_page_ok(self._manager, page, _response_status(navigation))
-                page.on("response", on_response)
-                try:
-                    if rednote:
-                        page.locator(_NOTIFICATION_LINK_SELECTOR).first.click(
-                            timeout=_MENTIONS_TIMEOUT_MS
-                        )
-                        _ensure_page_ok(self._manager, page, None)
-                    else:
-                        reload_response = page.reload(wait_until="domcontentloaded")
-                        _ensure_page_ok(
-                            self._manager, page, _response_status(reload_response)
-                        )
-                    _wait_for_mentions_response(page, captured)
-                    if not captured:
-                        raise XhsContractError("mentions response was not observed")
-                    _ensure_page_ok(
-                        self._manager, page, _optional_status(captured.get("status"))
-                    )
-                    if captured.get("error"):
-                        raise XhsContractError("mentions response was malformed")
-                    payload = captured.get("payload")
-                    _validate_mentions_payload(payload)
-                    return parse_mentions_payload(payload)[:limit]
-                finally:
-                    page.remove_listener("response", on_response)
+                payload = _capture_mentions_payload(self._manager, page)
+                return parse_mentions_payload(payload)[:limit]
         except (XhsContractError, XhsPausedError):
             raise
         except Exception as error:
@@ -227,74 +194,183 @@ class XhsGateway:
                 message="Comment replies are disabled",
             )
 
-        navigation_url, _ = _note_urls(self._manager.base_url, mention)
         try:
             with self._manager.session() as page:
-                response = page.goto(navigation_url, wait_until="domcontentloaded")
-                risk = _page_outcome(
-                    self._manager, page, _response_status(response)
-                )
-                if risk is not None:
-                    return risk
-                if _comments_disabled(page):
-                    return _reply_failure(
-                        "COMMENTS_DISABLED", "Note comments are disabled"
+                if _is_rednote(self._manager.base_url):
+                    return _reply_from_notification(
+                        self._manager, page, mention, text
                     )
-
-                comment = _find_comment(page, mention.comment_id)
-                if comment is None:
-                    return _reply_failure(
-                        "COMMENT_NOT_FOUND", "The source comment was not found"
-                    )
-
-                comment.locator(
-                    ".right .interactions .reply, .reply-btn"
-                ).first.click(timeout=2_000)
-                input_locator = page.locator(
-                    "div.input-box div.content-edit p.content-input"
-                ).first
-                try:
-                    input_locator.fill(text, timeout=2_000)
-                except Exception:
-                    input_locator.click(timeout=2_000)
-                    page.keyboard.insert_text(text)
-
-                risk = _page_outcome(self._manager, page, None)
-                if risk is not None:
-                    return risk
-
-                submit = page.locator("div.bottom button.submit").first
-                if submit.count() == 0:
-                    return _reply_failure(
-                        "SUBMIT_NOT_FOUND", "The reply submit control was not found"
-                    )
-                if not submit.is_enabled(timeout=2_000):
-                    return _reply_failure(
-                        "SUBMIT_DISABLED", "The reply submit control is disabled"
-                    )
-                submit_responses: list[Any] = []
-
-                def on_submit_response(response: Any) -> None:
-                    if _is_reply_submit_response(response):
-                        submit_responses.append(response)
-
-                page.on("response", on_submit_response)
-                try:
-                    try:
-                        submit.click(timeout=2_000)
-                    except Exception:
-                        return _reply_failure(
-                            "SUBMIT_FAILED", "The reply submission result is uncertain"
-                        )
-                    return _confirm_reply_submission(
-                        self._manager, page, submit_responses
-                    )
-                finally:
-                    page.remove_listener("response", on_submit_response)
+                return _reply_from_note(self._manager, page, mention, text)
+        except XhsPausedError as error:
+            return _reply_failure(error.code, "Browser operation paused")
         except Exception as error:
             if _is_timeout(error):
                 return _reply_failure("TIMEOUT", "The reply operation timed out")
             return _reply_failure("REPLY_FAILED", "The reply operation failed")
+
+
+def _capture_mentions_payload(manager: Any, page: Any) -> Mapping[object, object]:
+    captured: dict[str, object] = {}
+
+    def on_response(response: Any) -> None:
+        if captured or not _is_mentions_response(response):
+            return
+        captured["status"] = _response_status(response)
+        try:
+            captured["payload"] = response.json()
+        except Exception:
+            captured["error"] = True
+
+    notification_url = f"{manager.base_url}/notification"
+    rednote = _is_rednote(manager.base_url)
+    entry_url = manager.base_url if rednote else notification_url
+    navigation = page.goto(entry_url, wait_until="domcontentloaded")
+    _ensure_page_ok(manager, page, _response_status(navigation))
+    page.on("response", on_response)
+    try:
+        if rednote:
+            page.locator(_NOTIFICATION_LINK_SELECTOR).first.click(
+                timeout=_MENTIONS_TIMEOUT_MS
+            )
+            _ensure_page_ok(manager, page, None)
+        else:
+            reload_response = page.reload(wait_until="domcontentloaded")
+            _ensure_page_ok(manager, page, _response_status(reload_response))
+        _wait_for_mentions_response(page, captured)
+        if not captured:
+            raise XhsContractError("mentions response was not observed")
+        _ensure_page_ok(manager, page, _optional_status(captured.get("status")))
+        if captured.get("error"):
+            raise XhsContractError("mentions response was malformed")
+        payload = captured.get("payload")
+        _validate_mentions_payload(payload)
+        return payload
+    finally:
+        page.remove_listener("response", on_response)
+
+
+def _reply_from_notification(
+    manager: Any,
+    page: Any,
+    mention: TransientMention,
+    text: str,
+) -> ReplyOutcome:
+    payload = _capture_mentions_payload(manager, page)
+    target = _indexed_mention(payload, mention.mention_id)
+    if target is None:
+        return _reply_failure(
+            "NOTIFICATION_NOT_FOUND", "The source notification was not found"
+        )
+    index, current, message_count = target
+    if not _same_mention(current, mention):
+        return _reply_failure(
+            "NOTIFICATION_MISMATCH", "The source notification did not match"
+        )
+
+    cards = page.locator(_NOTIFICATION_CARD_SELECTOR)
+    _wait_for_notification_cards(page, cards, message_count)
+    if cards.count() != message_count:
+        return _reply_failure(
+            "NOTIFICATION_MISMATCH", "The notification list did not match"
+        )
+    card = cards.nth(index)
+    if not _notification_card_matches(card, current):
+        return _reply_failure(
+            "NOTIFICATION_MISMATCH", "The source notification did not match"
+        )
+
+    reply = card.locator(_NOTIFICATION_REPLY_SELECTOR).first
+    if reply.count() == 0:
+        return _reply_failure(
+            "REPLY_CONTROL_NOT_FOUND", "The notification reply control was not found"
+        )
+    reply.click(timeout=2_000)
+    input_locator = card.locator(_NOTIFICATION_INPUT_SELECTOR).first
+    try:
+        input_locator.wait_for(state="visible", timeout=2_000)
+    except Exception as error:
+        if _is_timeout(error):
+            return _reply_failure(
+                "INPUT_NOT_FOUND", "The notification reply input was not found"
+            )
+        raise
+    if input_locator.count() == 0:
+        return _reply_failure(
+            "INPUT_NOT_FOUND", "The notification reply input was not found"
+        )
+    submit = card.locator(_NOTIFICATION_SUBMIT_SELECTOR).first
+    return _submit_reply_once(manager, page, input_locator, submit, text)
+
+
+def _reply_from_note(
+    manager: Any,
+    page: Any,
+    mention: TransientMention,
+    text: str,
+) -> ReplyOutcome:
+    navigation_url, _ = _note_urls(manager.base_url, mention)
+    response = page.goto(navigation_url, wait_until="domcontentloaded")
+    risk = _page_outcome(manager, page, _response_status(response))
+    if risk is not None:
+        return risk
+    if _comments_disabled(page):
+        return _reply_failure("COMMENTS_DISABLED", "Note comments are disabled")
+
+    comment = _find_comment(page, mention.comment_id)
+    if comment is None:
+        return _reply_failure("COMMENT_NOT_FOUND", "The source comment was not found")
+    comment.locator(".right .interactions .reply, .reply-btn").first.click(
+        timeout=2_000
+    )
+    input_locator = page.locator(
+        "div.input-box div.content-edit p.content-input"
+    ).first
+    submit = page.locator("div.bottom button.submit").first
+    return _submit_reply_once(manager, page, input_locator, submit, text)
+
+
+def _submit_reply_once(
+    manager: Any,
+    page: Any,
+    input_locator: Any,
+    submit: Any,
+    text: str,
+) -> ReplyOutcome:
+    try:
+        input_locator.fill(text, timeout=2_000)
+    except Exception:
+        input_locator.click(timeout=2_000)
+        page.keyboard.insert_text(text)
+
+    risk = _page_outcome(manager, page, None)
+    if risk is not None:
+        return risk
+    if submit.count() == 0:
+        return _reply_failure(
+            "SUBMIT_NOT_FOUND", "The reply submit control was not found"
+        )
+    if not submit.is_enabled(timeout=2_000):
+        return _reply_failure(
+            "SUBMIT_DISABLED", "The reply submit control is disabled"
+        )
+
+    submit_responses: list[Any] = []
+
+    def on_submit_response(response: Any) -> None:
+        if _is_reply_submit_response(response):
+            submit_responses.append(response)
+
+    page.on("response", on_submit_response)
+    try:
+        try:
+            submit.click(timeout=2_000)
+        except Exception:
+            return _reply_failure(
+                "SUBMIT_FAILED", "The reply submission result is uncertain"
+            )
+        return _confirm_reply_submission(manager, page, submit_responses)
+    finally:
+        page.remove_listener("response", on_submit_response)
 
 
 def _is_mentions_response(response: Any) -> bool:
@@ -322,6 +398,76 @@ def _validate_mentions_payload(payload: object) -> None:
     data = payload.get("data")
     if not isinstance(data, Mapping) or not isinstance(data.get("message_list"), list):
         raise XhsContractError("mentions response was malformed")
+
+
+def _is_rednote(base_url: str) -> bool:
+    try:
+        return urlsplit(base_url).hostname == "www.rednote.com"
+    except ValueError:
+        return False
+
+
+def _indexed_mention(
+    payload: Mapping[object, object],
+    mention_id: str,
+) -> tuple[int, TransientMention, int] | None:
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        return None
+    messages = data.get("message_list")
+    if not isinstance(messages, list):
+        return None
+    for index, message in enumerate(messages):
+        parsed = parse_mentions_payload(
+            {"data": {"message_list": [message]}}
+        )
+        if parsed and parsed[0].mention_id == mention_id:
+            return index, parsed[0], len(messages)
+    return None
+
+
+def _same_mention(current: TransientMention, expected: TransientMention) -> bool:
+    return bool(
+        current.mention_id == expected.mention_id
+        and current.sender_user_id == expected.sender_user_id
+        and current.comment_id == expected.comment_id
+        and current.note_id == expected.note_id
+        and _normalized_notification_text(current.comment_text)
+        == _normalized_notification_text(expected.comment_text)
+    )
+
+
+def _wait_for_notification_cards(page: Any, cards: Any, expected: int) -> None:
+    deadline = monotonic() + (_NOTIFICATION_RENDER_TIMEOUT_MS / 1_000)
+    remaining_ms = _NOTIFICATION_RENDER_TIMEOUT_MS
+    while cards.count() < expected and remaining_ms > 0 and monotonic() < deadline:
+        wait_ms = min(_EVENT_PUMP_MS, remaining_ms)
+        page.wait_for_timeout(wait_ms)
+        remaining_ms -= wait_ms
+
+
+def _notification_card_matches(card: Any, mention: TransientMention) -> bool:
+    content = card.locator(_NOTIFICATION_CONTENT_SELECTOR).first
+    if content.count() != 1:
+        return False
+    try:
+        rendered = content.inner_text(timeout=2_000)
+    except Exception:
+        return False
+    if _normalized_notification_text(rendered) != _normalized_notification_text(
+        mention.comment_text
+    ):
+        return False
+
+    profile_path = f"/user/profile/{quote(mention.sender_user_id, safe='')}"
+    sender = card.locator(
+        f'a[href="{profile_path}"], a[href^="{profile_path}?"]'
+    ).first
+    return sender.count() > 0
+
+
+def _normalized_notification_text(value: object) -> str:
+    return " ".join(unicodedata.normalize("NFKC", str(value or "")).split())
 
 
 def _payload_pause_code(payload: Mapping[object, object]) -> str | None:

@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.2.3": "RedNote 改为在评论和 @ 通知卡片内精确回复，避免帖子评论分页导致回复失败。",
         "v0.2.2": "登录页新增 Cookie 有效状态标签，并将凭据操作改为保存并验证。",
         "v0.2.1": "在插件登录页增加 Cookie 获取步骤、站点区分和凭据安全提示。",
         "v0.2.0": "移除 CB/CDP 和扫码登录，改为私有 Cookie/Storage State 导入并自动验证。",

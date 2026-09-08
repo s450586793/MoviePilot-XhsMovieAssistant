@@ -193,16 +193,53 @@ class FakeKeyboard:
 
 
 class FakeLocator:
-    def __init__(self, page: "FakePage", selector: str, *, kind: str = "root") -> None:
+    def __init__(
+        self,
+        page: "FakePage",
+        selector: str,
+        *,
+        kind: str = "root",
+        notification_index: int | None = None,
+    ) -> None:
         self.page = page
         self.selector = selector
         self.kind = kind
+        self.notification_index = notification_index
 
     @property
     def first(self) -> "FakeLocator":
         return self
 
+    def nth(self, index: int) -> "FakeLocator":
+        assert self.selector == ".tabs-content-container > .container"
+        return FakeLocator(
+            self.page,
+            self.selector,
+            kind="notification_card",
+            notification_index=index,
+        )
+
     def count(self) -> int:
+        if self.selector == ".tabs-content-container > .container":
+            return len(self.page.notification_rows)
+        if self.kind == "notification_descendant":
+            index = self.notification_index
+            if index is None or not 0 <= index < len(self.page.notification_rows):
+                return 0
+            row = self.page.notification_rows[index]
+            if self.selector == ".interaction-content":
+                return 1
+            if self.selector == ".action-reply":
+                return int(bool(row.get("has_reply", True)))
+            if self.selector in {"textarea.comment-input", "button.submit"}:
+                return int(
+                    self.page.active_notification_index == index
+                    and self.page.notification_editor_ready
+                )
+            if self.selector.startswith('a[href="/user/profile/'):
+                profile_path = f'/user/profile/{row.get("sender_user_id", "")}'
+                return int(profile_path in self.selector)
+            return 0
         if self.selector.startswith("#comment-"):
             comment_id = self.selector.removeprefix("#comment-")
             threshold = self.page.comment_ids.get(comment_id)
@@ -212,10 +249,24 @@ class FakeLocator:
         return int(self.selector in self.page.present_selectors)
 
     def locator(self, selector: str) -> "FakeLocator":
-        assert self.selector.startswith("#comment-")
-        return FakeLocator(self.page, selector, kind="reply")
+        if self.selector.startswith("#comment-"):
+            return FakeLocator(self.page, selector, kind="reply")
+        assert self.kind == "notification_card"
+        return FakeLocator(
+            self.page,
+            selector,
+            kind="notification_descendant",
+            notification_index=self.notification_index,
+        )
 
     def inner_text(self, **kwargs: object) -> str:
+        if (
+            self.kind == "notification_descendant"
+            and self.selector == ".interaction-content"
+        ):
+            index = self.notification_index
+            assert index is not None
+            return str(self.page.notification_rows[index].get("content", ""))
         if self.selector == "body":
             return self.page.body_text
         return self.page.dom_text.get(self.selector, "")
@@ -229,6 +280,14 @@ class FakeLocator:
         self.page.filled_text = text
         self.page.input_text = text
 
+    def wait_for(self, **kwargs: object) -> None:
+        assert self.kind == "notification_descendant"
+        assert self.selector == "textarea.comment-input"
+        assert kwargs == {"state": "visible", "timeout": 2_000}
+        assert self.page.active_notification_index == self.notification_index
+        self.page.notification_editor_ready = True
+        self.page.notification_editor_waits += 1
+
     def text_content(self, **kwargs: object) -> str:
         if self.selector == "div.input-box div.content-edit p.content-input":
             return self.page.input_text
@@ -238,13 +297,21 @@ class FakeLocator:
         if self.kind == "reply":
             self.page.reply_clicks += 1
             return
+        if (
+            self.kind == "notification_descendant"
+            and self.selector == ".action-reply"
+        ):
+            self.page.active_notification_index = self.notification_index
+            self.page.notification_editor_ready = not self.page.defer_notification_editor
+            self.page.reply_clicks += 1
+            return
         if self.selector == 'a[href="/notification"], a[href^="/notification?"]':
             self.page.actions.append("click_notification")
             origin = urlsplit(self.page.url)
             self.page.url = f"{origin.scheme}://{origin.netloc}/notification"
             self.page.emit_responses()
             return
-        if self.selector == "div.bottom button.submit":
+        if self.selector in {"div.bottom button.submit", "button.submit"}:
             self.page.submit_clicks += 1
             if self.page.submit_error is not None:
                 raise self.page.submit_error
@@ -300,6 +367,11 @@ class FakePage:
         }
         self.comment_ids: dict[str, int] = {"target-1": 0}
         self.comment_disabled = False
+        self.notification_rows: list[dict[str, object]] = []
+        self.active_notification_index: int | None = None
+        self.defer_notification_editor = False
+        self.notification_editor_ready = True
+        self.notification_editor_waits = 0
         self.scroll_count = 0
         self.reply_clicks = 0
         self.submit_clicks = 0
@@ -488,6 +560,129 @@ def test_fetch_mentions_uses_rednote_in_app_notification_navigation(
         "remove_response",
     ]
     assert fake_page.listeners == []
+
+
+def _rednote_reply_case(
+    fake_page: FakePage,
+) -> tuple[XhsGateway, TransientMention]:
+    target = mention_payload()["data"]["message_list"][0]
+    target["comment_info"]["content"] = "@助手\u00a0订阅这个"
+    payload = mention_payload(count=0)
+    payload["data"]["message_list"] = [
+        {
+            "id": "non-mention-0",
+            "type": "like/note",
+            "user_info": {"userid": "other-user"},
+            "comment_info": {"content": ""},
+        },
+        target,
+    ]
+    fake_page.url = "https://www.rednote.com/notification"
+    fake_page.responses = [FakeResponse(MENTIONS_API_URL, payload=payload)]
+    fake_page.notification_rows = [
+        {"sender_user_id": "other-user", "content": "", "has_reply": False},
+        {
+            "sender_user_id": "user-0",
+            "content": "@助手 订阅这个",
+            "has_reply": True,
+        },
+    ]
+    fake_page.comment_ids = {}
+    fake_page.submit_response_status = 200
+    fake_page.submit_response_payload = successful_reply_response().payload
+    gateway = XhsGateway(
+        FakeManager(fake_page, base_url="https://www.rednote.com"),
+        replies_enabled=True,
+    )
+    mention = make_mention(
+        mention_id="mention-0",
+        sender_user_id="user-0",
+        comment_id="comment-0",
+        comment_text="@助手 订阅这个",
+        note_id="note-0",
+        xsec_token="transient-token-0",
+    )
+    return gateway, mention
+
+
+def test_rednote_reply_uses_verified_source_notification_card(
+    fake_page: FakePage,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+
+    outcome = gateway.reply_to_comment(mention, "收到，已安排订阅。")
+
+    assert outcome.success is True
+    assert outcome.reply_id == "reply-123"
+    assert fake_page.goto_url == "https://www.rednote.com"
+    assert fake_page.active_notification_index == 1
+    assert fake_page.filled_text == "收到，已安排订阅。"
+    assert fake_page.reply_clicks == 1
+    assert fake_page.submit_clicks == 1
+
+
+def test_rednote_reply_waits_for_async_inline_editor(
+    fake_page: FakePage,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+    fake_page.defer_notification_editor = True
+
+    outcome = gateway.reply_to_comment(mention, "收到，已安排订阅。")
+
+    assert outcome.success is True
+    assert fake_page.notification_editor_waits == 1
+    assert fake_page.submit_clicks == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sender_user_id", "different-user"),
+        ("content", "另一条相同位置的通知"),
+    ],
+)
+def test_rednote_reply_rejects_notification_card_identity_mismatch(
+    fake_page: FakePage,
+    field: str,
+    value: str,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+    fake_page.notification_rows[1][field] = value
+
+    outcome = gateway.reply_to_comment(mention, "收到，已安排订阅。")
+
+    assert outcome.success is False
+    assert outcome.code == "NOTIFICATION_MISMATCH"
+    assert fake_page.reply_clicks == 0
+    assert fake_page.submit_clicks == 0
+
+
+def test_rednote_reply_rejects_notification_list_count_mismatch(
+    fake_page: FakePage,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+    fake_page.notification_rows.pop()
+
+    outcome = gateway.reply_to_comment(mention, "收到，已安排订阅。")
+
+    assert outcome.success is False
+    assert outcome.code == "NOTIFICATION_MISMATCH"
+    assert fake_page.reply_clicks == 0
+    assert fake_page.submit_clicks == 0
+
+
+def test_rednote_reply_does_not_submit_when_inline_reply_is_unavailable(
+    fake_page: FakePage,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+    fake_page.notification_rows[1]["has_reply"] = False
+
+    outcome = gateway.reply_to_comment(mention, "收到，已安排订阅。")
+
+    assert outcome.success is False
+    assert outcome.code == "REPLY_CONTROL_NOT_FOUND"
+    assert fake_page.reply_clicks == 0
+    assert fake_page.submit_clicks == 0
 
 
 def test_fetch_mentions_ignores_non_target_response_and_times_out_boundedly(
