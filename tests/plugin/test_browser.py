@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -36,11 +37,6 @@ class FakeLocator:
         if not self.is_visible():
             raise TimeoutError("locator was not visible")
 
-    def screenshot(self, **kwargs) -> bytes:
-        self.page.screenshot_args = kwargs
-        self.page.screenshot_selector = self.selector
-        return self.page.qr_png
-
     def inner_text(self, **kwargs) -> str:
         if self.selector == "body" and self.page.body_error is not None:
             raise self.page.body_error
@@ -75,12 +71,9 @@ class FakePage:
         self.delayed_visible_selectors: set[str] = set()
         self.text = ""
         self.body_error = None
-        self.qr_png = b"\x89PNG\r\n\x1a\nqr"
         self.goto_status = 200
         self.goto_args = None
         self.wait_args = None
-        self.screenshot_args = None
-        self.screenshot_selector = None
         self.evaluate_calls = []
 
     def goto(self, *args, **kwargs) -> FakeResponse:
@@ -110,19 +103,25 @@ class FakeContext:
     def clear_cookies(self) -> None:
         self.runtime.cookies_cleared = True
 
+    def new_page(self):
+        return self.runtime.page
 
-class FakeExternalContext:
-    def __init__(self, pages):
-        self.pages = pages
-        self.closed = False
-
-    def close(self) -> None:
-        self.closed = True
+    def storage_state(self):
+        return self.runtime.context_storage_state
 
 
 class FakeBrowser:
-    def __init__(self, contexts):
-        self.contexts = contexts
+    def __init__(self, runtime=None, contexts=None):
+        self.runtime = runtime
+        self.contexts = contexts or []
+
+    def new_context(self, **kwargs) -> FakeContext:
+        self.runtime.context_args = kwargs
+        self.runtime.context = FakeContext(self.runtime)
+        return self.runtime.context
+
+    def close(self) -> None:
+        self.runtime.browser_closed = True
 
 
 class FakeChromium:
@@ -130,25 +129,20 @@ class FakeChromium:
         self.runtime = runtime
         self.executable_path = str(runtime.executable_path)
 
-    def launch_persistent_context(self, **kwargs) -> FakeContext:
-        self.runtime.launch_args = kwargs
-        self.runtime.context = FakeContext(self.runtime)
-        return self.runtime.context
-
-    def connect_over_cdp(self, endpoint_url: str, **kwargs) -> FakeBrowser:
-        self.runtime.cdp_connect_args = (endpoint_url, kwargs)
-        return self.runtime.cdp_browser
-
+    def launch(self, **kwargs) -> FakeBrowser:
+        self.runtime.browser_launch_args = kwargs
+        return FakeBrowser(self.runtime)
 
 class FakePlaywright:
     def __init__(self, executable_path: Path):
         self.page = FakePage()
         self.executable_path = executable_path
         self.chromium = FakeChromium(self)
-        self.launch_args = None
         self.context = None
-        self.cdp_browser = None
-        self.cdp_connect_args = None
+        self.browser_launch_args = None
+        self.context_args = None
+        self.context_storage_state = {"cookies": [], "origins": []}
+        self.browser_closed = False
         self.context_closed = False
         self.cookies_cleared = False
         self.stopped = False
@@ -201,7 +195,7 @@ def test_supported_site_resolves_to_fixed_origin(tmp_path, site: str, expected_u
     assert browser.base_url == expected_url
 
 
-def test_session_uses_persistent_profile_proxy_and_expected_options(
+def test_session_uses_imported_storage_state_in_an_isolated_context(
     tmp_path, fake_playwright, monkeypatch
 ) -> None:
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "parent-owned-cache")
@@ -212,105 +206,104 @@ def test_session_uses_persistent_profile_proxy_and_expected_options(
         proxy=proxy,
         playwright_factory=lambda: fake_playwright,
     )
+    browser.session_store.import_cookie_header("a1=secret")
 
     with browser.session() as page:
         assert page is fake_playwright.page
 
-    assert fake_playwright.launch_args == {
-        "user_data_dir": tmp_path / "browser",
+    assert fake_playwright.browser_launch_args == {
         "executable_path": fake_playwright.executable_path,
         "headless": True,
         "proxy": proxy,
+    }
+    assert fake_playwright.context_args == {
+        "storage_state": browser.session_store.path,
         "viewport": {"width": 1280, "height": 900},
         "locale": "zh-CN",
     }
     assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "parent-owned-cache"
     assert fake_playwright.context_closed is True
+    assert fake_playwright.browser_closed is True
     assert fake_playwright.stopped is True
 
 
-def test_cdp_session_reuses_matching_context_without_closing_it(
-    tmp_path, fake_playwright
+def test_session_refreshes_imported_storage_state_before_closing(
+    tmp_path,
+    fake_playwright,
 ) -> None:
-    unrelated = FakePage()
-    unrelated.url = "https://example.com"
-    xhs_page = FakePage()
-    xhs_page.url = "https://www.xiaohongshu.com/notification"
-    context = FakeExternalContext([unrelated, xhs_page])
-    fake_playwright.cdp_browser = FakeBrowser([context])
     browser = BrowserManager(
         tmp_path,
         site="xiaohongshu",
         proxy=None,
         playwright_factory=lambda: fake_playwright,
-        browser_mode="cdp",
-        cdp_url="http://cloakbrowser:9050/api/profiles/xhs/cdp",
-        cdp_token="cdp-secret",
     )
-
-    with browser.session() as page:
-        assert page is xhs_page
-
-    assert fake_playwright.cdp_connect_args == (
-        "http://cloakbrowser:9050/api/profiles/xhs/cdp",
-        {
-            "timeout": 10_000,
-            "headers": {"Authorization": "Bearer cdp-secret"},
-        },
-    )
-    assert fake_playwright.launch_args is None
-    assert context.closed is False
-    assert fake_playwright.stopped is True
-
-
-def test_cdp_mode_does_not_require_or_install_private_chromium(
-    tmp_path, monkeypatch
-) -> None:
-    runtime = FakePlaywright(tmp_path / "missing-chromium")
-    page = FakePage()
-    runtime.cdp_browser = FakeBrowser([FakeExternalContext([page])])
-    browser = BrowserManager(
-        tmp_path,
-        site="xiaohongshu",
-        proxy=None,
-        playwright_factory=lambda: runtime,
-        browser_mode="cdp",
-        cdp_url="http://cloakbrowser:9050/api/profiles/xhs/cdp",
-    )
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("installer ran")),
-    )
-
-    assert browser.chromium_status() == OperationResult(success=True, data="EXTERNAL")
-    assert browser.install_chromium() == OperationResult(
-        success=True,
-        message="External browser does not require Chromium installation",
-        data="EXTERNAL",
-    )
-    with browser.session() as selected:
-        assert selected is page
-
-
-def test_close_active_context_never_closes_external_cdp_context(
-    tmp_path, fake_playwright
-) -> None:
-    context = FakeExternalContext([FakePage()])
-    fake_playwright.cdp_browser = FakeBrowser([context])
-    browser = BrowserManager(
-        tmp_path,
-        site="xiaohongshu",
-        proxy=None,
-        playwright_factory=lambda: fake_playwright,
-        browser_mode="cdp",
-        cdp_url="http://cloakbrowser:9050/api/profiles/xhs/cdp",
-    )
+    browser.session_store.import_cookie_header("a1=old-secret")
+    fake_playwright.context_storage_state = {
+        "cookies": [
+            {
+                "name": "a1",
+                "value": "refreshed-secret",
+                "domain": ".xiaohongshu.com",
+                "path": "/",
+                "expires": -1,
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        ],
+        "origins": [],
+    }
 
     with browser.session():
-        browser.close_active_context()
+        pass
 
-    assert context.closed is False
+    persisted = json.loads(browser.session_store.path.read_text(encoding="utf-8"))
+    assert persisted["cookies"][0]["value"] == "refreshed-secret"
+    assert fake_playwright.context_closed is True
+
+
+def test_session_closes_all_browser_resources_when_state_refresh_fails(
+    tmp_path,
+    fake_playwright,
+    monkeypatch,
+) -> None:
+    browser = BrowserManager(
+        tmp_path,
+        site="xiaohongshu",
+        proxy=None,
+        playwright_factory=lambda: fake_playwright,
+    )
+    browser.session_store.import_cookie_header("a1=secret")
+    monkeypatch.setattr(
+        browser.session_store,
+        "import_storage_state",
+        lambda state: (_ for _ in ()).throw(OSError("write failed")),
+    )
+
+    with pytest.raises(OSError, match="write failed"):
+        with browser.session():
+            pass
+
+    assert fake_playwright.context_closed is True
+    assert fake_playwright.browser_closed is True
+    assert fake_playwright.stopped is True
+
+
+def test_session_skips_state_refresh_after_active_context_is_interrupted(
+    manager,
+    fake_playwright,
+) -> None:
+    manager.session_store.import_cookie_header("a1=secret")
+
+    with manager.session():
+        fake_playwright.context.storage_state = lambda: (_ for _ in ()).throw(
+            RuntimeError("context is closed")
+        )
+        manager.close_active_context()
+
+    assert fake_playwright.context_closed is True
+    assert fake_playwright.browser_closed is True
+    assert fake_playwright.stopped is True
 
 
 def test_session_closes_context_and_playwright_and_releases_lock_after_exception(
@@ -383,8 +376,8 @@ def test_managers_never_mutate_browser_env_or_share_executables(tmp_path, monkey
         pass
 
     assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "parent-owned-cache"
-    assert first_runtime.launch_args["executable_path"] == first_runtime.executable_path
-    assert second_runtime.launch_args["executable_path"] == second_runtime.executable_path
+    assert first_runtime.browser_launch_args["executable_path"] == first_runtime.executable_path
+    assert second_runtime.browser_launch_args["executable_path"] == second_runtime.executable_path
 
 
 def test_chromium_status_detects_executable_in_private_cache(manager, fake_playwright) -> None:
@@ -736,6 +729,37 @@ def test_check_login_prefers_initial_state(manager, fake_playwright) -> None:
     assert fake_playwright.page.goto_args[0] == ("https://www.xiaohongshu.com",)
 
 
+def test_cookie_import_immediately_validates_the_real_browser_session(
+    manager,
+    fake_playwright,
+) -> None:
+    fake_playwright.page.initial_logged_in = True
+    fake_playwright.context_storage_state = {
+        "cookies": [
+            {
+                "name": "a1",
+                "value": "refreshed-secret",
+                "domain": ".xiaohongshu.com",
+                "path": "/",
+                "expires": -1,
+                "httpOnly": False,
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        ],
+        "origins": [],
+    }
+
+    result = manager.import_credentials(cookie_header="a1=secret")
+
+    assert result == OperationResult(
+        success=True,
+        data={"credential_type": "cookie", "cookie_count": 1},
+    )
+    assert fake_playwright.page.goto_args[0] == ("https://www.xiaohongshu.com",)
+    assert manager.session_store.status() == "PRESENT"
+
+
 def test_check_login_waits_for_profile_link_when_rednote_state_is_absent(
     tmp_path, fake_playwright
 ) -> None:
@@ -807,52 +831,7 @@ def test_check_login_finds_visible_second_selector(manager, fake_playwright) -> 
     assert result.should_pause is True
 
 
-def test_capture_login_qrcode_returns_png_bytes_without_writing_file(
-    manager, fake_playwright, tmp_path
-) -> None:
-    fake_playwright.page.visible_selectors.add(".login-container .qrcode-img")
-
-    result = manager.capture_login_qrcode()
-
-    assert result.success is True
-    assert result.data == fake_playwright.page.qr_png
-    assert fake_playwright.page.screenshot_args == {"type": "png"}
-    assert list(tmp_path.rglob("*.png")) == []
-
-
-def test_capture_login_qrcode_allows_ordinary_sms_verification_copy(
-    manager, fake_playwright
-) -> None:
-    fake_playwright.page.text = "手机号登录 获取验证码"
-    fake_playwright.page.visible_selectors.update(
-        {".login-container", ".login-container .qrcode-img"}
-    )
-
-    result = manager.capture_login_qrcode()
-
-    assert result.success is True
-    assert result.data == fake_playwright.page.qr_png
-
-
-def test_capture_login_qrcode_skips_hidden_first_selector(manager, fake_playwright) -> None:
-    fake_playwright.page.present_selectors.add(".login-container .qrcode-img")
-    fake_playwright.page.visible_selectors.add(".qrcode-container img")
-
-    result = manager.capture_login_qrcode()
-
-    assert result.success is True
-    assert fake_playwright.page.screenshot_selector == ".qrcode-container img"
-
-
-def test_capture_login_qrcode_reports_missing_locator(manager) -> None:
-    result = manager.capture_login_qrcode()
-
-    assert result.success is False
-    assert result.code == "LOGIN_REQUIRED"
-    assert result.data is None
-
-
-@pytest.mark.parametrize("operation", ["capture_login_qrcode", "check_login", "logout"])
+@pytest.mark.parametrize("operation", ["check_login", "logout"])
 def test_browser_actions_sanitize_launch_failures(tmp_path, operation: str) -> None:
     def fail_factory():
         raise RuntimeError("failed at https://user:password@example.test/profile")
@@ -887,7 +866,9 @@ def test_session_releases_lock_when_playwright_factory_fails(tmp_path, fake_play
     assert fake_playwright.context_closed is True
 
 
-def test_logout_clears_only_persistent_context_storage(manager, fake_playwright) -> None:
+def test_logout_clears_context_and_imported_storage_state(manager, fake_playwright) -> None:
+    manager.session_store.import_cookie_header("a1=secret")
+
     result = manager.logout()
 
     assert result.success is True
@@ -896,6 +877,7 @@ def test_logout_clears_only_persistent_context_storage(manager, fake_playwright)
     assert fake_playwright.page.evaluate_calls[-1] == storage_clear
     assert fake_playwright.page.evaluate_calls.count(storage_clear) == 1
     assert fake_playwright.context_closed is True
+    assert manager.session_store.status() == "MISSING"
 
 
 def test_logout_clears_profile_and_reports_navigation_risk(manager, fake_playwright) -> None:
@@ -932,7 +914,7 @@ def test_detect_risk_uses_dom_inner_text_when_locator_read_is_unavailable(
     manager, fake_playwright
 ) -> None:
     fake_playwright.page.text = "请完成人机验证"
-    fake_playwright.page.body_error = TimeoutError("remote CDP locator timed out")
+    fake_playwright.page.body_error = TimeoutError("DOM read timed out")
 
     risk = manager.detect_risk(fake_playwright.page)
 
@@ -974,7 +956,7 @@ def test_ordinary_login_sms_copy_is_login_required_not_risk_control(
     ("operation", "status", "expected_code"),
     [
         ("check_login", 403, "AUTH_REQUIRED"),
-        ("capture_login_qrcode", 429, "RATE_LIMITED"),
+        ("logout", 429, "RATE_LIMITED"),
     ],
 )
 def test_navigation_response_status_pauses_even_with_empty_body(
@@ -989,7 +971,7 @@ def test_navigation_response_status_pauses_even_with_empty_body(
     assert result.should_pause is True
 
 
-@pytest.mark.parametrize("operation", ["check_login", "capture_login_qrcode", "logout"])
+@pytest.mark.parametrize("operation", ["check_login", "logout"])
 @pytest.mark.parametrize(
     ("status", "expected_code"),
     [(403, "AUTH_REQUIRED"), (429, "RATE_LIMITED")],

@@ -1,7 +1,7 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 
-const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
+const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,withKeys:_withKeys,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
 const _hoisted_1 = {
@@ -16,26 +16,31 @@ const _hoisted_3 = {
 const _hoisted_4 = { key: 0 };
 const _hoisted_5 = {
   class: "xhs-movie-page__section",
+  "aria-labelledby": "session-import"
+};
+const _hoisted_6 = { class: "xhs-movie-page__session-import" };
+const _hoisted_7 = {
+  class: "xhs-movie-page__section",
   "aria-labelledby": "management-actions"
 };
-const _hoisted_6 = { class: "xhs-movie-page__tool-grid" };
-const _hoisted_7 = {
+const _hoisted_8 = { class: "xhs-movie-page__tool-grid" };
+const _hoisted_9 = {
   class: "xhs-movie-page__section",
   "aria-labelledby": "recent-requests"
 };
-const _hoisted_8 = { class: "xhs-movie-page__section-title" };
-const _hoisted_9 = {
+const _hoisted_10 = { class: "xhs-movie-page__section-title" };
+const _hoisted_11 = {
   key: 1,
   class: "xhs-movie-page__empty"
 };
-const _hoisted_10 = { class: "xhs-movie-request__header" };
-const _hoisted_11 = { class: "xhs-movie-request__id" };
-const _hoisted_12 = { class: "xhs-movie-request__summary" };
-const _hoisted_13 = {
+const _hoisted_12 = { class: "xhs-movie-request__header" };
+const _hoisted_13 = { class: "xhs-movie-request__id" };
+const _hoisted_14 = { class: "xhs-movie-request__summary" };
+const _hoisted_15 = {
   key: 0,
   class: "xhs-movie-request__editor"
 };
-const _hoisted_14 = {
+const _hoisted_16 = {
   key: 1,
   class: "xhs-movie-request__actions"
 };
@@ -57,13 +62,14 @@ const loading = ref(false);
 const actionKey = ref('');
 const feedback = ref({ type: 'info', text: '', source: '' });
 const snapshot = ref({ status: {}, requests: [] });
+const cookieDraft = ref('');
+const storageFileInput = ref(null);
 const drafts = reactive({});
 
 const actionableStatuses = new Set(['NEW', 'FAILED', 'NEED_CONFIRMATION', 'DRY_RUN_MATCHED']);
 const replyableStatuses = new Set(['SUBSCRIBED', 'ALREADY_SUBSCRIBED', 'ALREADY_IN_LIBRARY', 'NEED_CONFIRMATION', 'FAILED']);
 const status = computed(() => snapshot.value.status || {});
 const requests = computed(() => Array.isArray(snapshot.value.requests) ? snapshot.value.requests : []);
-const qrSource = computed(() => status.value.qrcode || '');
 
 function unwrap(response) {
   const body = response && Object.prototype.hasOwnProperty.call(response, 'success')
@@ -205,20 +211,70 @@ async function submitManual(row) {
   await runAction(path, `请求 #${row.id} 的人工确认`, payload);
 }
 
+async function importCookie() {
+  const cookie = cookieDraft.value.trim();
+  if (!cookie) {
+    showFeedback('error', 'Cookie 不能为空。');
+    return
+  }
+  cookieDraft.value = '';
+  await runAction(
+    'plugin/XhsMovieAssistant/session/import',
+    'Cookie 导入',
+    { cookie },
+  );
+}
+
+function selectStorageState() {
+  storageFileInput.value?.click();
+}
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => resolve(String(reader.result || '')));
+    reader.addEventListener('error', () => reject(new Error('无法读取 Storage State 文件。')));
+    reader.readAsText(file);
+  })
+}
+
+async function importStorageState(event) {
+  const input = event.target;
+  const file = input?.files?.[0];
+  if (input) input.value = '';
+  if (!file) return
+  if (file.size > 1024 * 1024) {
+    showFeedback('error', 'Storage State 文件不能超过 1 MB。');
+    return
+  }
+  try {
+    const storageState = JSON.parse(await readFile(file));
+    if (!storageState || Array.isArray(storageState) || typeof storageState !== 'object') {
+      throw new Error('Storage State JSON 格式无效。')
+    }
+    await runAction(
+      'plugin/XhsMovieAssistant/session/import',
+      'Storage State 导入',
+      { storage_state: storageState },
+    );
+  } catch (error) {
+    showFeedback('error', message(error, 'Storage State 导入失败。'));
+  }
+}
+
 onMounted(loadState);
 
 return (_ctx, _cache) => {
   const _component_VBtn = _resolveComponent("VBtn");
   const _component_VAlert = _resolveComponent("VAlert");
-  const _component_VImg = _resolveComponent("VImg");
+  const _component_VTextField = _resolveComponent("VTextField");
   const _component_VProgressLinear = _resolveComponent("VProgressLinear");
   const _component_VChip = _resolveComponent("VChip");
-  const _component_VTextField = _resolveComponent("VTextField");
   const _component_VSelect = _resolveComponent("VSelect");
 
   return (_openBlock(), _createElementBlock("main", _hoisted_1, [
     _createElementVNode("header", _hoisted_2, [
-      _cache[9] || (_cache[9] = _createElementVNode("div", null, [
+      _cache[10] || (_cache[10] = _createElementVNode("div", null, [
         _createElementVNode("p", { class: "xhs-movie-page__eyebrow" }, "运行面板"),
         _createElementVNode("h1", null, "小红书影视助手")
       ], -1)),
@@ -249,12 +305,8 @@ return (_ctx, _cache) => {
     _createElementVNode("section", _hoisted_3, [
       _createElementVNode("dl", null, [
         _createElementVNode("div", null, [
-          _cache[10] || (_cache[10] = _createElementVNode("dt", null, "插件", -1)),
+          _cache[11] || (_cache[11] = _createElementVNode("dt", null, "插件", -1)),
           _createElementVNode("dd", null, _toDisplayString(status.value.activity || 'IDLE'), 1)
-        ]),
-        _createElementVNode("div", null, [
-          _cache[11] || (_cache[11] = _createElementVNode("dt", null, "浏览器模式", -1)),
-          _createElementVNode("dd", null, _toDisplayString(status.value.browser_mode || 'EMBEDDED'), 1)
         ]),
         _createElementVNode("div", null, [
           _cache[12] || (_cache[12] = _createElementVNode("dt", null, "浏览器", -1)),
@@ -274,49 +326,97 @@ return (_ctx, _cache) => {
           _createElementVNode("dd", null, _toDisplayString(status.value.login || 'UNKNOWN'), 1)
         ]),
         _createElementVNode("div", null, [
-          _cache[15] || (_cache[15] = _createElementVNode("dt", null, "暂停原因", -1)),
+          _cache[15] || (_cache[15] = _createElementVNode("dt", null, "登录凭据", -1)),
+          _createElementVNode("dd", null, _toDisplayString(status.value.session_state || 'MISSING'), 1)
+        ]),
+        _createElementVNode("div", null, [
+          _cache[16] || (_cache[16] = _createElementVNode("dt", null, "暂停原因", -1)),
           _createElementVNode("dd", null, _toDisplayString(status.value.pause_code || '无'), 1)
         ])
-      ]),
-      (qrSource.value)
-        ? (_openBlock(), _createBlock(_component_VImg, {
-            key: 0,
-            src: qrSource.value,
-            width: "180",
-            height: "180",
-            contain: "",
-            class: "xhs-movie-page__qr",
-            alt: "小红书登录二维码"
-          }, null, 8, ["src"]))
-        : _createCommentVNode("", true)
+      ])
     ]),
     _createElementVNode("section", _hoisted_5, [
-      _cache[24] || (_cache[24] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
-        _createElementVNode("h2", { id: "management-actions" }, "管理与诊断")
+      _cache[19] || (_cache[19] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
+        _createElementVNode("h2", { id: "session-import" }, "登录凭据")
       ], -1)),
       _createElementVNode("div", _hoisted_6, [
-        (status.value.browser_mode !== 'CDP')
-          ? (_openBlock(), _createBlock(_component_VBtn, {
-              key: 0,
-              "prepend-icon": "mdi-download",
-              variant: "outlined",
-              loading: actionKey.value === 'plugin/XhsMovieAssistant/chromium/install',
-              onClick: _cache[1] || (_cache[1] = $event => (runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')))
-            }, {
-              default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
-                _createTextVNode("安装 Chromium", -1)
-              ]))]),
-              _: 1
-            }, 8, ["loading"]))
-          : _createCommentVNode("", true),
+        _createVNode(_component_VTextField, {
+          modelValue: cookieDraft.value,
+          "onUpdate:modelValue": _cache[1] || (_cache[1] = $event => ((cookieDraft).value = $event)),
+          label: "小红书 Cookie",
+          type: "password",
+          autocomplete: "new-password",
+          density: "comfortable",
+          onKeyup: _withKeys(importCookie, ["enter"])
+        }, null, 8, ["modelValue"]),
         _createVNode(_component_VBtn, {
-          "prepend-icon": "mdi-qrcode-scan",
+          "prepend-icon": "mdi-cookie-check-outline",
           variant: "outlined",
-          loading: actionKey.value === 'plugin/XhsMovieAssistant/login/start',
-          onClick: _cache[2] || (_cache[2] = $event => (runAction('plugin/XhsMovieAssistant/login/start', '登录二维码生成')))
+          loading: actionKey.value === 'plugin/XhsMovieAssistant/session/import',
+          onClick: importCookie
         }, {
           default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
-            _createTextVNode("生成登录二维码", -1)
+            _createTextVNode("导入 Cookie", -1)
+          ]))]),
+          _: 1
+        }, 8, ["loading"]),
+        _createElementVNode("input", {
+          ref_key: "storageFileInput",
+          ref: storageFileInput,
+          type: "file",
+          accept: "application/json,.json",
+          "aria-label": "Storage State 文件",
+          hidden: "",
+          onChange: importStorageState
+        }, null, 544),
+        _createVNode(_component_VBtn, {
+          "prepend-icon": "mdi-file-upload-outline",
+          variant: "outlined",
+          loading: actionKey.value === 'plugin/XhsMovieAssistant/session/import',
+          onClick: selectStorageState
+        }, {
+          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+            _createTextVNode("导入 Storage State", -1)
+          ]))]),
+          _: 1
+        }, 8, ["loading"])
+      ])
+    ]),
+    _createElementVNode("section", _hoisted_7, [
+      _cache[28] || (_cache[28] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
+        _createElementVNode("h2", { id: "management-actions" }, "管理与诊断")
+      ], -1)),
+      _createElementVNode("div", _hoisted_8, [
+        _createVNode(_component_VBtn, {
+          "prepend-icon": "mdi-download",
+          variant: "outlined",
+          loading: actionKey.value === 'plugin/XhsMovieAssistant/chromium/install',
+          onClick: _cache[2] || (_cache[2] = $event => (runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')))
+        }, {
+          default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+            _createTextVNode("安装 Chromium", -1)
+          ]))]),
+          _: 1
+        }, 8, ["loading"]),
+        _createVNode(_component_VBtn, {
+          "prepend-icon": "mdi-shield-check-outline",
+          variant: "outlined",
+          loading: actionKey.value === 'plugin/XhsMovieAssistant/session/validate',
+          onClick: _cache[3] || (_cache[3] = $event => (runAction('plugin/XhsMovieAssistant/session/validate', '登录验证')))
+        }, {
+          default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
+            _createTextVNode("验证登录", -1)
+          ]))]),
+          _: 1
+        }, 8, ["loading"]),
+        _createVNode(_component_VBtn, {
+          "prepend-icon": "mdi-logout",
+          variant: "outlined",
+          loading: actionKey.value === 'plugin/XhsMovieAssistant/session/clear',
+          onClick: _cache[4] || (_cache[4] = $event => (runAction('plugin/XhsMovieAssistant/session/clear', '清除登录')))
+        }, {
+          default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
+            _createTextVNode("清除登录", -1)
           ]))]),
           _: 1
         }, 8, ["loading"]),
@@ -324,9 +424,9 @@ return (_ctx, _cache) => {
           "prepend-icon": "mdi-refresh",
           variant: "outlined",
           loading: actionKey.value === 'plugin/XhsMovieAssistant/poll',
-          onClick: _cache[3] || (_cache[3] = $event => (runAction('plugin/XhsMovieAssistant/poll', '立即轮询')))
+          onClick: _cache[5] || (_cache[5] = $event => (runAction('plugin/XhsMovieAssistant/poll', '立即轮询')))
         }, {
-          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+          default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
             _createTextVNode("立即轮询", -1)
           ]))]),
           _: 1
@@ -335,21 +435,10 @@ return (_ctx, _cache) => {
           "prepend-icon": "mdi-play",
           variant: "outlined",
           loading: actionKey.value === 'plugin/XhsMovieAssistant/resume',
-          onClick: _cache[4] || (_cache[4] = $event => (runAction('plugin/XhsMovieAssistant/resume', '恢复轮询')))
+          onClick: _cache[6] || (_cache[6] = $event => (runAction('plugin/XhsMovieAssistant/resume', '恢复轮询')))
         }, {
-          default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+          default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
             _createTextVNode("恢复轮询", -1)
-          ]))]),
-          _: 1
-        }, 8, ["loading"]),
-        _createVNode(_component_VBtn, {
-          "prepend-icon": "mdi-logout",
-          variant: "outlined",
-          loading: actionKey.value === 'plugin/XhsMovieAssistant/logout',
-          onClick: _cache[5] || (_cache[5] = $event => (runAction('plugin/XhsMovieAssistant/logout', '退出登录')))
-        }, {
-          default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
-            _createTextVNode("退出登录", -1)
           ]))]),
           _: 1
         }, 8, ["loading"]),
@@ -357,9 +446,9 @@ return (_ctx, _cache) => {
           "prepend-icon": "mdi-robot-outline",
           variant: "outlined",
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/ai',
-          onClick: _cache[6] || (_cache[6] = $event => (runAction('plugin/XhsMovieAssistant/test/ai', 'AI 测试', { title: '星际穿越' })))
+          onClick: _cache[7] || (_cache[7] = $event => (runAction('plugin/XhsMovieAssistant/test/ai', 'AI 测试', { title: '星际穿越' })))
         }, {
-          default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
+          default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
             _createTextVNode("测试 AI", -1)
           ]))]),
           _: 1
@@ -368,9 +457,9 @@ return (_ctx, _cache) => {
           "prepend-icon": "mdi-movie-search-outline",
           variant: "outlined",
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/moviepilot',
-          onClick: _cache[7] || (_cache[7] = $event => (runAction('plugin/XhsMovieAssistant/test/moviepilot', 'MoviePilot 测试', { title: '星际穿越', media_type: 'movie' })))
+          onClick: _cache[8] || (_cache[8] = $event => (runAction('plugin/XhsMovieAssistant/test/moviepilot', 'MoviePilot 测试', { title: '星际穿越', media_type: 'movie' })))
         }, {
-          default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
+          default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
             _createTextVNode("测试 MoviePilot", -1)
           ]))]),
           _: 1
@@ -379,18 +468,18 @@ return (_ctx, _cache) => {
           "prepend-icon": "mdi-bell-check-outline",
           variant: "outlined",
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/notification',
-          onClick: _cache[8] || (_cache[8] = $event => (runAction('plugin/XhsMovieAssistant/test/notification', '通知测试')))
+          onClick: _cache[9] || (_cache[9] = $event => (runAction('plugin/XhsMovieAssistant/test/notification', '通知测试')))
         }, {
-          default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+          default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
             _createTextVNode("测试通知", -1)
           ]))]),
           _: 1
         }, 8, ["loading"])
       ])
     ]),
-    _createElementVNode("section", _hoisted_7, [
-      _createElementVNode("div", _hoisted_8, [
-        _cache[25] || (_cache[25] = _createElementVNode("h2", { id: "recent-requests" }, "最近请求", -1)),
+    _createElementVNode("section", _hoisted_9, [
+      _createElementVNode("div", _hoisted_10, [
+        _cache[29] || (_cache[29] = _createElementVNode("h2", { id: "recent-requests" }, "最近请求", -1)),
         _createElementVNode("span", null, _toDisplayString(requests.value.length) + " 项", 1)
       ]),
       (loading.value)
@@ -402,16 +491,16 @@ return (_ctx, _cache) => {
           }))
         : _createCommentVNode("", true),
       (!loading.value && !requests.value.length)
-        ? (_openBlock(), _createElementBlock("p", _hoisted_9, "没有可显示的持久化请求。"))
+        ? (_openBlock(), _createElementBlock("p", _hoisted_11, "没有可显示的持久化请求。"))
         : _createCommentVNode("", true),
       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(requests.value, (row) => {
         return (_openBlock(), _createElementBlock("article", {
           key: row.id,
           class: "xhs-movie-request"
         }, [
-          _createElementVNode("header", _hoisted_10, [
+          _createElementVNode("header", _hoisted_12, [
             _createElementVNode("div", null, [
-              _createElementVNode("span", _hoisted_11, "#" + _toDisplayString(row.id), 1),
+              _createElementVNode("span", _hoisted_13, "#" + _toDisplayString(row.id), 1),
               _createElementVNode("h3", null, _toDisplayString(row.title), 1)
             ]),
             _createVNode(_component_VChip, {
@@ -425,26 +514,26 @@ return (_ctx, _cache) => {
               _: 2
             }, 1032, ["color"])
           ]),
-          _createElementVNode("dl", _hoisted_12, [
+          _createElementVNode("dl", _hoisted_14, [
             _createElementVNode("div", null, [
-              _cache[26] || (_cache[26] = _createElementVNode("dt", null, "匹配", -1)),
+              _cache[30] || (_cache[30] = _createElementVNode("dt", null, "匹配", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.match), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[27] || (_cache[27] = _createElementVNode("dt", null, "回复", -1)),
+              _cache[31] || (_cache[31] = _createElementVNode("dt", null, "回复", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.reply), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[28] || (_cache[28] = _createElementVNode("dt", null, "错误", -1)),
+              _cache[32] || (_cache[32] = _createElementVNode("dt", null, "错误", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.error), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[29] || (_cache[29] = _createElementVNode("dt", null, "更新", -1)),
+              _cache[33] || (_cache[33] = _createElementVNode("dt", null, "更新", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.updated_at), 1)
             ])
           ]),
           (isActionable(row))
-            ? (_openBlock(), _createElementBlock("div", _hoisted_13, [
+            ? (_openBlock(), _createElementBlock("div", _hoisted_15, [
                 _createVNode(_component_VTextField, {
                   modelValue: draftFor(row).title,
                   "onUpdate:modelValue": $event => ((draftFor(row).title) = $event),
@@ -481,7 +570,7 @@ return (_ctx, _cache) => {
               ]))
             : _createCommentVNode("", true),
           (isActionable(row) || canReply(row))
-            ? (_openBlock(), _createElementBlock("footer", _hoisted_14, [
+            ? (_openBlock(), _createElementBlock("footer", _hoisted_16, [
                 (isActionable(row))
                   ? (_openBlock(), _createBlock(_component_VBtn, {
                       key: 0,
@@ -512,7 +601,7 @@ return (_ctx, _cache) => {
                       loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/manual`,
                       onClick: $event => (submitManual(row))
                     }, {
-                      default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
+                      default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
                         _createTextVNode("人工确认", -1)
                       ]))]),
                       _: 1
@@ -539,6 +628,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-03951d02"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ee4347ff"]]);
 
 export { Page as default };

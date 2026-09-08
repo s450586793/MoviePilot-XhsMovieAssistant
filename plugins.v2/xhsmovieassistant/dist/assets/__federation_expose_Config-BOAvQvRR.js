@@ -1,7 +1,7 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 
-const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createTextVNode:_createTextVNode,withModifiers:_withModifiers} = await importShared('vue');
+const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,withCtx:_withCtx,createTextVNode:_createTextVNode,withModifiers:_withModifiers,openBlock:_openBlock,createBlock:_createBlock} = await importShared('vue');
 
 
 const _hoisted_1 = { class: "xhs-movie-config__section" };
@@ -36,9 +36,6 @@ const DEFAULT_CONFIG = Object.freeze({
   reply_confirmation_enabled: false,
   reply_failure_enabled: false,
   site: 'xiaohongshu',
-  browser_mode: 'embedded',
-  cdp_url: '',
-  cdp_token: '',
   authorized_user_ids: '',
   poll_interval_minutes: 2,
   confidence_threshold: 0.85,
@@ -105,7 +102,7 @@ return (_ctx, _cache) => {
         class: "xhs-movie-config__toolbar"
       }, {
         default: _withCtx(() => [
-          _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-h6" }, "小红书影视助手", -1)),
+          _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-h6" }, "小红书影视助手", -1)),
           _createVNode(_component_VSpacer),
           _createVNode(_component_VBtn, {
             icon: "mdi-content-save-outline",
@@ -126,7 +123,7 @@ return (_ctx, _cache) => {
       }),
       _createVNode(_component_VDivider),
       _createElementVNode("section", _hoisted_1, [
-        _cache[23] || (_cache[23] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "运行策略", -1)),
+        _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "运行策略", -1)),
         _createVNode(_component_VRow, { dense: "" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCol, {
@@ -194,7 +191,7 @@ return (_ctx, _cache) => {
         })
       ]),
       _createElementVNode("section", _hoisted_2, [
-        _cache[24] || (_cache[24] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "回复范围", -1)),
+        _cache[21] || (_cache[21] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "回复范围", -1)),
         _createVNode(_component_VRow, { dense: "" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCol, {
@@ -262,7 +259,7 @@ return (_ctx, _cache) => {
         })
       ]),
       _createElementVNode("section", _hoisted_3, [
-        _cache[25] || (_cache[25] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "识别条件", -1)),
+        _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "识别条件", -1)),
         _createVNode(_component_VRow, { dense: "" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCol, {
@@ -281,62 +278,12 @@ return (_ctx, _cache) => {
             }),
             _createVNode(_component_VCol, {
               cols: "12",
-              sm: "6"
-            }, {
-              default: _withCtx(() => [
-                _createVNode(_component_VSelect, {
-                  modelValue: localConfig.value.browser_mode,
-                  "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((localConfig.value.browser_mode) = $event)),
-                  label: "浏览器模式",
-                  items: [{ title: '内置 Chromium', value: 'embedded' }, { title: 'CloakBrowser / CDP', value: 'cdp' }]
-                }, null, 8, ["modelValue"])
-              ]),
-              _: 1
-            }),
-            (localConfig.value.browser_mode === 'cdp')
-              ? (_openBlock(), _createBlock(_component_VCol, {
-                  key: 0,
-                  cols: "12",
-                  sm: "8"
-                }, {
-                  default: _withCtx(() => [
-                    _createVNode(_component_VTextField, {
-                      modelValue: localConfig.value.cdp_url,
-                      "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((localConfig.value.cdp_url) = $event)),
-                      label: "CloakBrowser CDP URL",
-                      placeholder: "http://NAS-IP:9050/api/profiles/PROFILE-ID/cdp",
-                      autocomplete: "off"
-                    }, null, 8, ["modelValue"])
-                  ]),
-                  _: 1
-                }))
-              : _createCommentVNode("", true),
-            (localConfig.value.browser_mode === 'cdp')
-              ? (_openBlock(), _createBlock(_component_VCol, {
-                  key: 1,
-                  cols: "12",
-                  sm: "4"
-                }, {
-                  default: _withCtx(() => [
-                    _createVNode(_component_VTextField, {
-                      modelValue: localConfig.value.cdp_token,
-                      "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((localConfig.value.cdp_token) = $event)),
-                      label: "CDP Access Token",
-                      type: "password",
-                      autocomplete: "new-password"
-                    }, null, 8, ["modelValue"])
-                  ]),
-                  _: 1
-                }))
-              : _createCommentVNode("", true),
-            _createVNode(_component_VCol, {
-              cols: "12",
               sm: "3"
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_VTextField, {
                   modelValue: localConfig.value.poll_interval_minutes,
-                  "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((localConfig.value.poll_interval_minutes) = $event)),
+                  "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((localConfig.value.poll_interval_minutes) = $event)),
                   modelModifiers: { number: true },
                   label: "轮询间隔（分钟）",
                   type: "number",
@@ -353,7 +300,7 @@ return (_ctx, _cache) => {
               default: _withCtx(() => [
                 _createVNode(_component_VTextField, {
                   modelValue: localConfig.value.confidence_threshold,
-                  "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((localConfig.value.confidence_threshold) = $event)),
+                  "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((localConfig.value.confidence_threshold) = $event)),
                   modelModifiers: { number: true },
                   label: "AI 置信度阈值",
                   type: "number",
@@ -368,7 +315,7 @@ return (_ctx, _cache) => {
               default: _withCtx(() => [
                 _createVNode(_component_VTextarea, {
                   modelValue: localConfig.value.authorized_user_ids,
-                  "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((localConfig.value.authorized_user_ids) = $event)),
+                  "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((localConfig.value.authorized_user_ids) = $event)),
                   label: "授权用户 ID（逗号或换行分隔）",
                   rows: "3",
                   "auto-grow": ""
@@ -381,38 +328,38 @@ return (_ctx, _cache) => {
         })
       ]),
       _createElementVNode("section", _hoisted_4, [
-        _cache[26] || (_cache[26] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "公开回复模板", -1)),
+        _cache[23] || (_cache[23] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "公开回复模板", -1)),
         _createVNode(_component_VTextarea, {
           modelValue: localConfig.value.template_SUBSCRIBED,
-          "onUpdate:modelValue": _cache[16] || (_cache[16] = $event => ((localConfig.value.template_SUBSCRIBED) = $event)),
+          "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((localConfig.value.template_SUBSCRIBED) = $event)),
           label: "订阅成功回复模板",
           rows: "2",
           "auto-grow": ""
         }, null, 8, ["modelValue"]),
         _createVNode(_component_VTextarea, {
           modelValue: localConfig.value.template_ALREADY_SUBSCRIBED,
-          "onUpdate:modelValue": _cache[17] || (_cache[17] = $event => ((localConfig.value.template_ALREADY_SUBSCRIBED) = $event)),
+          "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((localConfig.value.template_ALREADY_SUBSCRIBED) = $event)),
           label: "已订阅回复模板",
           rows: "2",
           "auto-grow": ""
         }, null, 8, ["modelValue"]),
         _createVNode(_component_VTextarea, {
           modelValue: localConfig.value.template_ALREADY_IN_LIBRARY,
-          "onUpdate:modelValue": _cache[18] || (_cache[18] = $event => ((localConfig.value.template_ALREADY_IN_LIBRARY) = $event)),
+          "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((localConfig.value.template_ALREADY_IN_LIBRARY) = $event)),
           label: "媒体库已存在回复模板",
           rows: "2",
           "auto-grow": ""
         }, null, 8, ["modelValue"]),
         _createVNode(_component_VTextarea, {
           modelValue: localConfig.value.template_NEED_CONFIRMATION,
-          "onUpdate:modelValue": _cache[19] || (_cache[19] = $event => ((localConfig.value.template_NEED_CONFIRMATION) = $event)),
+          "onUpdate:modelValue": _cache[16] || (_cache[16] = $event => ((localConfig.value.template_NEED_CONFIRMATION) = $event)),
           label: "需人工确认回复模板",
           rows: "2",
           "auto-grow": ""
         }, null, 8, ["modelValue"]),
         _createVNode(_component_VTextarea, {
           modelValue: localConfig.value.template_FAILED,
-          "onUpdate:modelValue": _cache[20] || (_cache[20] = $event => ((localConfig.value.template_FAILED) = $event)),
+          "onUpdate:modelValue": _cache[17] || (_cache[17] = $event => ((localConfig.value.template_FAILED) = $event)),
           label: "处理失败回复模板",
           rows: "2",
           "auto-grow": ""
@@ -421,9 +368,9 @@ return (_ctx, _cache) => {
       _createElementVNode("div", _hoisted_5, [
         _createVNode(_component_VBtn, {
           variant: "text",
-          onClick: _cache[21] || (_cache[21] = $event => (emit('close')))
+          onClick: _cache[18] || (_cache[18] = $event => (emit('close')))
         }, {
-          default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+          default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
             _createTextVNode("取消", -1)
           ]))]),
           _: 1
@@ -433,7 +380,7 @@ return (_ctx, _cache) => {
           "prepend-icon": "mdi-content-save-outline",
           onClick: saveConfig
         }, {
-          default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
+          default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
             _createTextVNode("保存", -1)
           ]))]),
           _: 1
@@ -446,6 +393,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a3dcbebb"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4217fd0b"]]);
 
 export { Config as default };

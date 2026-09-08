@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hmac
 import re
 import threading
@@ -48,9 +47,6 @@ _DEFAULTS: dict[str, Any] = {
     "notifications_enabled": True,
     "reply_enabled": False,
     "site": "xiaohongshu",
-    "browser_mode": "embedded",
-    "cdp_url": "",
-    "cdp_token": "",
     "authorized_user_ids": "",
     "poll_interval_minutes": 2,
     "confidence_threshold": 0.85,
@@ -83,6 +79,7 @@ _JOIN_TIMEOUT_SECONDS = 2.0
 _OPERATION_MESSAGES = {
     "AUTH_REQUIRED": "Authentication is required",
     "BROWSER_UNAVAILABLE": "Chromium is unavailable",
+    "INVALID_CREDENTIALS": "Login credentials are invalid",
     "LOGIN_REQUIRED": "Login is required",
     "RATE_LIMITED": "The site rate limited this action",
     "SESSION_EXPIRED": "The browser session expired",
@@ -135,7 +132,7 @@ class XhsMovieAssistant(_PluginBase):
     plugin_name = "小红书影视助手"
     plugin_desc = "从授权账号的小红书 @ 请求识别影视作品并交给 MoviePilot 订阅。"
     plugin_icon = "xhsmovieassistant.png"
-    plugin_version = "0.1.9"
+    plugin_version = "0.2.0"
     plugin_author = "s450586793"
     author_url = "https://github.com/s450586793/MoviePilot-XhsMovieAssistant"
     plugin_config_prefix = "xhsmovieassistant_"
@@ -152,9 +149,6 @@ class XhsMovieAssistant(_PluginBase):
             category: False for category in REPLY_CATEGORY_STATUSES
         }
         self._site = "xiaohongshu"
-        self._browser_mode = "embedded"
-        self._cdp_url = ""
-        self._cdp_token: str | None = None
         self._authorized_user_ids = frozenset()
         self._authorized_user_ids_raw = ""
         self._poll_interval_minutes = 2
@@ -175,7 +169,7 @@ class XhsMovieAssistant(_PluginBase):
             "chromium": "UNKNOWN",
             "chromium_code": None,
             "login": "UNKNOWN",
-            "qrcode": None,
+            "session_state": "MISSING",
             "activity": "IDLE",
         }
 
@@ -335,8 +329,9 @@ class XhsMovieAssistant(_PluginBase):
         """Register the authenticated management API surface."""
         routes = (
             ("/chromium/install", self.install_chromium, "安装 Chromium"),
-            ("/login/start", self.start_login, "生成登录二维码"),
-            ("/logout", self.logout, "退出小红书登录"),
+            ("/session/import", self.import_session, "导入并验证登录凭据"),
+            ("/session/validate", self.validate_session, "验证小红书登录状态"),
+            ("/session/clear", self.clear_session, "清除小红书登录凭据"),
             ("/resume", self.resume, "恢复轮询"),
             ("/poll", self.poll, "立即轮询"),
             ("/requests/{request_id}/reprocess", self.reprocess, "重新处理请求"),
@@ -410,31 +405,6 @@ class XhsMovieAssistant(_PluginBase):
                 ],
             ),
             _field(
-                "VSelect",
-                "浏览器模式",
-                "browser_mode",
-                cols=6,
-                items=[
-                    {"title": "内置 Chromium", "value": "embedded"},
-                    {"title": "CloakBrowser / CDP", "value": "cdp"},
-                ],
-            ),
-            _field(
-                "VTextField",
-                "CloakBrowser CDP URL",
-                "cdp_url",
-                cols=8,
-                placeholder="http://NAS-IP:9050/api/profiles/PROFILE-ID/cdp",
-            ),
-            _field(
-                "VTextField",
-                "CDP Access Token",
-                "cdp_token",
-                cols=4,
-                type="password",
-                autocomplete="new-password",
-            ),
-            _field(
                 "VTextField",
                 "轮询间隔（分钟）",
                 "poll_interval_minutes",
@@ -490,7 +460,6 @@ class XhsMovieAssistant(_PluginBase):
         request_actions = self._request_actions(rows)
         paused = status.get("browser") == BrowserState.PAUSED.value
         alert_type = "warning" if paused else ("success" if self.get_state() else "info")
-        qr_source = status.get("qrcode") or ""
         return [
             {
                 "component": "VAlert",
@@ -506,28 +475,13 @@ class XhsMovieAssistant(_PluginBase):
                 "content": [
                     {
                         "component": "VCol",
-                        "props": {"cols": 12, "md": 4},
-                        "content": [
-                            {
-                                "component": "VImg",
-                                "props": {
-                                    "src": qr_source,
-                                    "width": 240,
-                                    "height": 240,
-                                    "cover": False,
-                                },
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 8},
+                        "props": {"cols": 12},
                         "content": [
                             _action_button("安装 Chromium", "mdi-download", "/chromium/install"),
-                            _action_button("生成登录二维码", "mdi-qrcode-scan", "/login/start"),
+                            _action_button("验证登录", "mdi-shield-check-outline", "/session/validate"),
+                            _action_button("清除登录", "mdi-logout", "/session/clear"),
                             _action_button("立即轮询", "mdi-refresh", "/poll"),
                             _action_button("恢复轮询", "mdi-play", "/resume"),
-                            _action_button("退出登录", "mdi-logout", "/logout"),
                             _action_button(
                                 "测试 AI",
                                 "mdi-robot-outline",
@@ -604,41 +558,131 @@ class XhsMovieAssistant(_PluginBase):
         )
 
     @_serialized_management
-    def start_login(
+    def import_session(
+        self,
+        body: dict[str, Any] | None = None,
+        request: Request = None,
+        apikey: str | None = None,
+    ) -> Any:
+        """Import a Cookie header or Storage State and validate it."""
+        if not self._authorized(request, apikey, body):
+            return self._unauthorized()
+        payload = body if isinstance(body, Mapping) else {}
+        cookie = payload.get("cookie")
+        storage_state = payload.get("storage_state")
+        try:
+            browser = self._ensure_browser()
+            result = browser.import_credentials(
+                cookie_header=cookie if isinstance(cookie, str) else None,
+                storage_state=(
+                    storage_state if isinstance(storage_state, Mapping) else None
+                ),
+            )
+        except Exception:
+            return self._failure("Login credentials could not be imported")
+        if not result.success:
+            self._cached_status["session_state"] = browser.session_store.status()
+            if result.code in {"LOGIN_REQUIRED", "SESSION_EXPIRED"}:
+                self._cached_status["login"] = "LOGGED_OUT"
+            return self._operation_response(result)
+        result_data = result.data if isinstance(result.data, Mapping) else {}
+        credential_type = str(result_data.get("credential_type") or "")
+        cookie_count = result_data.get("cookie_count")
+        data = {
+            "login": "LOGGED_IN",
+            "session_state": "PRESENT",
+            "credential_type": (
+                credential_type
+                if credential_type in {"cookie", "storage_state"}
+                else "unknown"
+            ),
+            "cookie_count": (
+                cookie_count
+                if isinstance(cookie_count, int) and not isinstance(cookie_count, bool)
+                else 0
+            ),
+        }
+        if self._repository is not None and self._service is not None:
+            try:
+                runtime = self._repository.get_runtime_state()
+                if runtime.browser_state is BrowserState.PAUSED:
+                    self._service.resume()
+            except Exception:
+                pass
+        self._cached_status.update(
+            browser=BrowserState.READY.value,
+            login="LOGGED_IN",
+            session_state="PRESENT",
+            pause_code=None,
+        )
+        return schemas.Response(
+            success=True,
+            message="Login credentials imported and validated",
+            data=data,
+        )
+
+    @_serialized_management
+    def validate_session(
         self, request: Request = None, apikey: str | None = None
     ) -> Any:
-        """Return an authenticated QR payload without exposing an image route."""
+        """Validate the imported login state against the configured site."""
         if not self._authorized(request, apikey):
             return self._unauthorized()
         try:
             browser = self._ensure_browser()
-            login = browser.check_login()
-            if login.success:
-                self._cached_status.update(login="LOGGED_IN", qrcode=None)
-                return schemas.Response(success=True, data={"login": "LOGGED_IN"})
-            if login.code != "LOGIN_REQUIRED":
-                return self._operation_response(login)
-            result = browser.capture_login_qrcode()
-            if not result.success or not isinstance(result.data, bytes):
-                return self._operation_response(result)
-            qrcode = "data:image/png;base64," + base64.b64encode(result.data).decode("ascii")
-            self._cached_status.update(login="WAITING_FOR_SCAN", qrcode=qrcode)
-            return schemas.Response(success=True, data={"qrcode": qrcode})
+            credentials = browser.session_store.status()
+            if credentials != "PRESENT":
+                self._cached_status.update(
+                    login="LOGGED_OUT",
+                    session_state="MISSING",
+                )
+                return schemas.Response(
+                    success=False,
+                    message="Login credentials are missing",
+                    data={"code": "INVALID_CREDENTIALS"},
+                )
+            result = browser.check_login()
         except Exception:
-            return self._failure("Login QR code could not be generated")
+            return self._failure("Login validation failed")
+        if not result.success:
+            if result.code in {"LOGIN_REQUIRED", "SESSION_EXPIRED"}:
+                self._cached_status["login"] = "LOGGED_OUT"
+            self._cached_status["session_state"] = credentials
+            return self._operation_response(result)
+        self._cached_status.update(
+            browser=BrowserState.READY.value,
+            login="LOGGED_IN",
+            session_state=credentials,
+            pause_code=None,
+        )
+        return schemas.Response(
+            success=True,
+            message="Login credentials are valid",
+            data={"login": "LOGGED_IN", "session_state": credentials},
+        )
 
     @_serialized_management
-    def logout(self, request: Request = None, apikey: str | None = None) -> Any:
-        """Explicitly clear the persistent browser session."""
+    def clear_session(
+        self, request: Request = None, apikey: str | None = None
+    ) -> Any:
+        """Clear all imported site credentials."""
         if not self._authorized(request, apikey):
             return self._unauthorized()
         try:
-            response = self._operation_response(self._ensure_browser().logout())
-            if response.success:
-                self._cached_status.update(login="LOGGED_OUT", qrcode=None)
-            return response
+            result = self._ensure_browser().logout()
         except Exception:
-            return self._failure("Logout failed")
+            return self._failure("Login credentials could not be cleared")
+        if not result.success:
+            return self._operation_response(result)
+        self._cached_status.update(
+            login="LOGGED_OUT",
+            session_state="MISSING",
+        )
+        return schemas.Response(
+            success=True,
+            message="Login credentials cleared",
+            data={"login": "LOGGED_OUT", "session_state": "MISSING"},
+        )
 
     @_serialized_management
     def resume(self, request: Request = None, apikey: str | None = None) -> Any:
@@ -789,7 +833,7 @@ class XhsMovieAssistant(_PluginBase):
             return self._failure("Notification test failed")
 
     def stop_service(self) -> None:
-        """Bound shutdown and release active resources without deleting the Profile."""
+        """Bound shutdown and release active browser resources."""
         with self._worker_lock:
             self._enabled = False
             self._stop_event.set()
@@ -826,13 +870,6 @@ class XhsMovieAssistant(_PluginBase):
         }
         site = str(values.get("site") or "").strip()
         self._site = site if site in _SITE_URLS else "xiaohongshu"
-        browser_mode = str(values.get("browser_mode") or "").strip()
-        self._browser_mode = (
-            browser_mode if browser_mode in {"embedded", "cdp"} else "embedded"
-        )
-        self._cdp_url = str(values.get("cdp_url") or "").strip()
-        self._cdp_token = str(values.get("cdp_token") or "").strip() or None
-        self._cached_status["browser_mode"] = self._browser_mode.upper()
         raw_ids = values.get("authorized_user_ids")
         self._authorized_user_ids_raw = raw_ids if isinstance(raw_ids, str) else ""
         self._authorized_user_ids = parse_authorized_ids(raw_ids)
@@ -868,9 +905,6 @@ class XhsMovieAssistant(_PluginBase):
             self.get_data_path(),
             self._site,
             getattr(settings, "PROXY_SERVER", None),
-            browser_mode=self._browser_mode,
-            cdp_url=self._cdp_url,
-            cdp_token=self._cdp_token,
         )
         resolver = MediaResolver()
         moviepilot = MoviePilotGateway()
@@ -908,14 +942,10 @@ class XhsMovieAssistant(_PluginBase):
             self._resolver = resolver
             self._moviepilot = moviepilot
             self._service = service
-            chromium = (
-                "EXTERNAL"
-                if self._browser_mode == "cdp"
-                else self._cached_status.get("chromium", "UNKNOWN")
-            )
             self._cached_status.update(
                 browser=BrowserState.READY.value,
-                chromium=chromium,
+                chromium=self._cached_status.get("chromium", "UNKNOWN"),
+                session_state=browser.session_store.status(),
                 activity="IDLE",
             )
 
@@ -925,12 +955,10 @@ class XhsMovieAssistant(_PluginBase):
                 self.get_data_path(),
                 self._site,
                 getattr(settings, "PROXY_SERVER", None),
-                browser_mode=self._browser_mode,
-                cdp_url=self._cdp_url,
-                cdp_token=self._cdp_token,
             )
-            if self._browser_mode == "cdp":
-                self._cached_status["chromium"] = "EXTERNAL"
+            self._cached_status["session_state"] = (
+                self._browser.session_store.status()
+            )
         return self._browser
 
     def _start_worker(self, activity: str, operation: Callable[[], Any]) -> bool:
@@ -1322,6 +1350,7 @@ class XhsMovieAssistant(_PluginBase):
         status = dict(self._cached_status)
         status.setdefault("chromium", "UNKNOWN")
         status.setdefault("chromium_code", None)
+        status.setdefault("session_state", "MISSING")
         if self._repository is None:
             return status
         try:
@@ -1338,6 +1367,7 @@ class XhsMovieAssistant(_PluginBase):
         chromium = str(status.get("chromium") or "UNKNOWN")
         chromium_code = str(status.get("chromium_code") or "")
         login = str(status.get("login") or "UNKNOWN")
+        session_state = str(status.get("session_state") or "MISSING")
         activity = str(status.get("activity") or "IDLE")
         pause = str(status.get("pause_code") or "")
         chromium_text = f"Chromium: {chromium}"
@@ -1345,7 +1375,7 @@ class XhsMovieAssistant(_PluginBase):
             chromium_text = f"{chromium_text} ({chromium_code})"
         details = (
             f"{state} | Browser: {browser} | {chromium_text} | "
-            f"Login: {login} | Activity: {activity}"
+            f"Login: {login} | Session: {session_state} | Activity: {activity}"
         )
         return f"{details} | Pause: {pause}" if pause else details
 

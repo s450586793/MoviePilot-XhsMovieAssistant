@@ -17,9 +17,6 @@ const DEFAULT_CONFIG = Object.freeze({
   reply_confirmation_enabled: false,
   reply_failure_enabled: false,
   site: 'xiaohongshu',
-  browser_mode: 'embedded',
-  cdp_url: '',
-  cdp_token: '',
   authorized_user_ids: '',
   poll_interval_minutes: 2,
   confidence_threshold: 0.85,
@@ -97,15 +94,6 @@ watch(
       <VRow dense>
         <VCol cols="12" sm="6">
           <VSelect v-model="localConfig.site" label="站点" :items="[{ title: '小红书', value: 'xiaohongshu' }, { title: 'RedNote', value: 'rednote' }]" />
-        </VCol>
-        <VCol cols="12" sm="6">
-          <VSelect v-model="localConfig.browser_mode" label="浏览器模式" :items="[{ title: '内置 Chromium', value: 'embedded' }, { title: 'CloakBrowser / CDP', value: 'cdp' }]" />
-        </VCol>
-        <VCol v-if="localConfig.browser_mode === 'cdp'" cols="12" sm="8">
-          <VTextField v-model="localConfig.cdp_url" label="CloakBrowser CDP URL" placeholder="http://NAS-IP:9050/api/profiles/PROFILE-ID/cdp" autocomplete="off" />
-        </VCol>
-        <VCol v-if="localConfig.browser_mode === 'cdp'" cols="12" sm="4">
-          <VTextField v-model="localConfig.cdp_token" label="CDP Access Token" type="password" autocomplete="new-password" />
         </VCol>
         <VCol cols="12" sm="3"><VTextField v-model.number="localConfig.poll_interval_minutes" label="轮询间隔（分钟）" type="number" min="1" max="10" /></VCol>
         <VCol cols="12" sm="3"><VTextField v-model.number="localConfig.confidence_threshold" label="AI 置信度阈值" type="number" min="0" max="1" step="0.05" /></VCol>

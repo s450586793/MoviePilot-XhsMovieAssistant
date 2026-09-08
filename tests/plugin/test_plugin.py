@@ -127,9 +127,9 @@ def test_default_config_is_dry_run_and_public_reply_off(tmp_path):
     }
     assert defaults["poll_interval_minutes"] == 2
     assert defaults["confidence_threshold"] == 0.85
-    assert defaults["browser_mode"] == "embedded"
-    assert defaults["cdp_url"] == ""
-    assert defaults["cdp_token"] == ""
+    assert "browser_mode" not in defaults
+    assert "cdp_url" not in defaults
+    assert "cdp_token" not in defaults
 
 
 def test_legacy_default_reply_text_is_migrated_without_overwriting_custom_text(
@@ -564,8 +564,9 @@ def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
     assert [route["path"] for route in routes] == [
         "/state",
         "/chromium/install",
-        "/login/start",
-        "/logout",
+        "/session/import",
+        "/session/validate",
+        "/session/clear",
         "/resume",
         "/poll",
         "/requests/{request_id}/reprocess",
@@ -589,7 +590,7 @@ def test_state_endpoint_returns_cached_status_and_durable_rows_without_runtime_w
     plugin._cached_status = {
         "browser": "READY",
         "login": "LOGGED_IN",
-        "qrcode": None,
+        "session_state": "PRESENT",
         "activity": "IDLE",
     }
     request = SimpleNamespace(
@@ -645,7 +646,7 @@ def test_state_endpoint_returns_cached_status_and_durable_rows_without_runtime_w
         "status": {
             "browser": "READY",
             "login": "LOGGED_IN",
-            "qrcode": None,
+            "session_state": "PRESENT",
             "activity": "IDLE",
             "chromium": "UNKNOWN",
             "chromium_code": None,
@@ -696,6 +697,7 @@ def test_state_preserves_completed_chromium_failure_with_durable_ready(tmp_path)
     fallback_text = plugin.get_page()[0]["props"]["text"]
     assert "Browser: READY" in fallback_text
     assert "Chromium: UNAVAILABLE (BROWSER_UNAVAILABLE)" in fallback_text
+    assert "Session: MISSING" in fallback_text
 
 
 def test_state_replaces_prior_chromium_failure_after_completed_success(tmp_path):
@@ -792,12 +794,12 @@ def test_direct_endpoint_auth_fails_closed_without_calling_runtime(tmp_path):
     assert "token" not in str(missing.data).casefold()
 
 
-def test_detail_page_uses_cached_status_table_qr_and_icon_buttons(tmp_path):
+def test_detail_page_uses_cached_session_status_and_icon_buttons(tmp_path):
     plugin = _plugin(tmp_path)
     plugin._cached_status = {
         "browser": "READY",
-        "login": "WAITING_FOR_SCAN",
-        "qrcode": "data:image/png;base64,cXI=",
+        "login": "LOGGED_IN",
+        "session_state": "PRESENT",
     }
     plugin._repository = SimpleNamespace(recent=lambda limit: [])
     plugin._browser = SimpleNamespace(
@@ -809,9 +811,7 @@ def test_detail_page_uses_cached_status_table_qr_and_icon_buttons(tmp_path):
 
     assert "VAlert" in {node["component"] for node in nodes}
     assert "VDataTable" in {node["component"] for node in nodes}
-    qr = next(node for node in nodes if node["component"] == "VImg")
-    assert qr["props"]["width"] == 240
-    assert qr["props"]["height"] == 240
+    assert "VImg" not in {node["component"] for node in nodes}
     buttons = [node for node in nodes if node["component"] == "VBtn"]
     assert buttons
     assert all(button["props"]["prepend-icon"].startswith("mdi-") for button in buttons)
@@ -820,7 +820,10 @@ def test_detail_page_uses_cached_status_table_qr_and_icon_buttons(tmp_path):
         "plugin/XhsMovieAssistant/test/ai",
         "plugin/XhsMovieAssistant/test/moviepilot",
         "plugin/XhsMovieAssistant/test/notification",
+        "plugin/XhsMovieAssistant/session/validate",
+        "plugin/XhsMovieAssistant/session/clear",
     } <= actions
+    assert "plugin/XhsMovieAssistant/login/start" not in actions
 
 
 def test_detail_page_exposes_match_errors_and_durable_row_actions(tmp_path):
@@ -906,30 +909,8 @@ def test_runtime_paths_stay_below_moviepilot_plugin_data_path(tmp_path):
     plugin.init_plugin({"enabled": True, "authorized_user_ids": "u1"})
 
     assert plugin._repository._database_path == tmp_path / "app.db"
-    assert plugin._browser.profile_path == tmp_path / "browser"
+    assert plugin._browser.session_store.path == tmp_path / "xhs-storage-state.json"
     assert plugin._browser.browser_path == tmp_path / "ms-playwright"
-    plugin.stop_service()
-
-
-def test_runtime_binds_external_cdp_browser_configuration(tmp_path):
-    plugin = _plugin(tmp_path)
-
-    plugin.init_plugin(
-        {
-            "enabled": True,
-            "authorized_user_ids": "u1",
-            "browser_mode": "cdp",
-            "cdp_url": "http://cloakbrowser:9050/api/profiles/xhs/cdp",
-            "cdp_token": "cdp-secret",
-        }
-    )
-
-    assert plugin._browser.browser_mode == "cdp"
-    assert plugin._browser.cdp_url == (
-        "http://cloakbrowser:9050/api/profiles/xhs/cdp"
-    )
-    assert plugin._browser.cdp_token == "cdp-secret"
-    assert plugin._cached_status["chromium"] == "EXTERNAL"
     plugin.stop_service()
 
 
@@ -1027,8 +1008,9 @@ def test_stop_service_uses_bounded_join_and_closes_active_context(tmp_path):
     [
         ("/chromium/install", (), {}),
         ("/state", (), {}),
-        ("/login/start", (), {}),
-        ("/logout", (), {}),
+        ("/session/import", (), {"body": {"cookie": "a1=value"}}),
+        ("/session/validate", (), {}),
+        ("/session/clear", (), {}),
         ("/resume", (), {}),
         ("/poll", (), {}),
         ("/requests/{request_id}/reprocess", (1,), {}),
@@ -1052,64 +1034,145 @@ def test_every_direct_endpoint_fails_closed_without_credentials(
     assert "test-api-token" not in repr(response.__dict__)
 
 
-def test_qr_endpoint_returns_authenticated_inline_payload(tmp_path):
+def test_cookie_import_endpoint_validates_and_exposes_only_safe_status(tmp_path):
     plugin = _plugin(tmp_path)
+    calls = []
     plugin._browser = SimpleNamespace(
-        check_login=lambda: entrypoint.OperationResult(
-            success=False,
-            code="LOGIN_REQUIRED",
-            should_pause=True,
+        import_credentials=lambda **kwargs: (
+            calls.append(kwargs)
+            or entrypoint.OperationResult(
+                success=True,
+                data={"credential_type": "cookie", "cookie_count": 2},
+            )
         ),
-        capture_login_qrcode=lambda: entrypoint.OperationResult(
-            success=True, data=b"png"
-        )
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
     )
 
-    response = plugin.start_login(apikey="test-api-token")
-
-    assert response.success is True
-    assert response.data == {"qrcode": "data:image/png;base64,cG5n"}
-    assert "test-api-token" not in repr(response.__dict__)
-
-
-def test_login_endpoint_detects_persisted_login_after_reload(tmp_path):
-    plugin = _plugin(tmp_path)
-    captured = []
-    plugin._browser = SimpleNamespace(
-        check_login=lambda: entrypoint.OperationResult(success=True),
-        capture_login_qrcode=lambda: captured.append(True),
+    response = plugin.import_session(
+        {"cookie": "a1=secret-a1; web_session=secret-session"},
+        apikey="test-api-token",
     )
 
-    response = plugin.start_login(apikey="test-api-token")
-
     assert response.success is True
-    assert response.data == {"login": "LOGGED_IN"}
+    assert response.data == {
+        "login": "LOGGED_IN",
+        "session_state": "PRESENT",
+        "credential_type": "cookie",
+        "cookie_count": 2,
+    }
+    assert calls == [
+        {
+            "cookie_header": "a1=secret-a1; web_session=secret-session",
+            "storage_state": None,
+        }
+    ]
     assert plugin._cached_status["login"] == "LOGGED_IN"
-    assert plugin._cached_status["qrcode"] is None
-    assert captured == []
+    assert plugin._cached_status["session_state"] == "PRESENT"
+    assert "secret-a1" not in repr(response.__dict__)
+    assert "secret-session" not in repr(response.__dict__)
 
 
-def test_login_endpoint_preserves_qr_when_status_is_indeterminate(tmp_path):
+def test_valid_import_resumes_a_prior_login_pause(tmp_path):
     plugin = _plugin(tmp_path)
-    qrcode = "data:image/png;base64,b2xk"
-    plugin._cached_status.update(login="WAITING_FOR_SCAN", qrcode=qrcode)
-    captured = []
+    resumed = []
+    plugin._repository = _RuntimeRepository()
+    plugin._repository.state.browser_state = entrypoint.BrowserState.PAUSED
+    plugin._repository.state.pause_code = "LOGIN_REQUIRED"
+    plugin._service = SimpleNamespace(resume=lambda: resumed.append(True))
     plugin._browser = SimpleNamespace(
-        check_login=lambda: entrypoint.OperationResult(
-            success=False,
-            code="TEMPORARY_FAILURE",
-            should_pause=False,
+        import_credentials=lambda **kwargs: entrypoint.OperationResult(
+            success=True,
+            data={"credential_type": "cookie", "cookie_count": 1},
         ),
-        capture_login_qrcode=lambda: captured.append(True),
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
     )
 
-    response = plugin.start_login(apikey="test-api-token")
+    response = plugin.import_session(
+        {"cookie": "a1=secret"},
+        apikey="test-api-token",
+    )
+
+    assert response.success is True
+    assert resumed == [True]
+    assert plugin._cached_status["browser"] == "READY"
+    assert plugin._cached_status["pause_code"] is None
+
+
+def test_invalid_import_returns_a_stable_code_without_echoing_input(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._browser = SimpleNamespace(
+        import_credentials=lambda **kwargs: entrypoint.OperationResult(
+            success=False,
+            code="INVALID_CREDENTIALS",
+            message="Cookie=a1=secret",
+        ),
+        session_store=SimpleNamespace(status=lambda: "MISSING"),
+    )
+
+    response = plugin.import_session(
+        {"cookie": "a1=secret"},
+        apikey="test-api-token",
+    )
 
     assert response.success is False
-    assert response.data == {"code": "TEMPORARY_FAILURE"}
-    assert plugin._cached_status["login"] == "WAITING_FOR_SCAN"
-    assert plugin._cached_status["qrcode"] == qrcode
-    assert captured == []
+    assert response.data == {"code": "INVALID_CREDENTIALS"}
+    assert "secret" not in repr(response.__dict__)
+
+
+def test_rejected_import_updates_cached_login_and_session_presence(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._cached_status.update(login="LOGGED_IN", session_state="PRESENT")
+    plugin._browser = SimpleNamespace(
+        import_credentials=lambda **kwargs: entrypoint.OperationResult(
+            success=False,
+            code="LOGIN_REQUIRED",
+            message="Login is required",
+            should_pause=True,
+        ),
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
+    )
+
+    response = plugin.import_session(
+        {"cookie": "a1=expired-secret"},
+        apikey="test-api-token",
+    )
+
+    assert response.success is False
+    assert response.data == {"code": "LOGIN_REQUIRED"}
+    assert plugin._cached_status["login"] == "LOGGED_OUT"
+    assert plugin._cached_status["session_state"] == "PRESENT"
+
+
+def test_validate_session_endpoint_updates_cached_login_status(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._browser = SimpleNamespace(
+        check_login=lambda: entrypoint.OperationResult(success=True),
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
+    )
+
+    response = plugin.validate_session(apikey="test-api-token")
+
+    assert response.success is True
+    assert response.data == {"login": "LOGGED_IN", "session_state": "PRESENT"}
+    assert plugin._cached_status["login"] == "LOGGED_IN"
+    assert plugin._cached_status["session_state"] == "PRESENT"
+
+
+def test_clear_session_endpoint_removes_imported_credentials(tmp_path):
+    plugin = _plugin(tmp_path)
+    cleared = []
+    plugin._browser = SimpleNamespace(
+        logout=lambda: cleared.append(True) or entrypoint.OperationResult(success=True),
+        session_store=SimpleNamespace(status=lambda: "MISSING"),
+    )
+
+    response = plugin.clear_session(apikey="test-api-token")
+
+    assert response.success is True
+    assert response.data == {"login": "LOGGED_OUT", "session_state": "MISSING"}
+    assert cleared == [True]
+    assert plugin._cached_status["login"] == "LOGGED_OUT"
+    assert plugin._cached_status["session_state"] == "MISSING"
 
 
 @pytest.mark.parametrize("secret", ["Cookie=session-secret", "xsec_token=secret"])
@@ -1120,10 +1183,11 @@ def test_browser_failure_response_redacts_external_secret(tmp_path, secret):
             success=False,
             code="UPSTREAM_ERROR",
             message=secret,
-        )
+        ),
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
     )
 
-    response = plugin.start_login(apikey="test-api-token")
+    response = plugin.validate_session(apikey="test-api-token")
 
     assert response.success is False
     assert secret not in repr(response.__dict__)
@@ -1204,12 +1268,10 @@ def test_form_contains_required_native_vuetify_controls(tmp_path):
     assert "VSelect" in components
     assert {
         "authorized_user_ids",
-        "browser_mode",
-        "cdp_url",
-        "cdp_token",
         "poll_interval_minutes",
         "confidence_threshold",
     } <= models
+    assert {"browser_mode", "cdp_url", "cdp_token"}.isdisjoint(models)
     assert {
         "reply_success_enabled",
         "reply_existing_enabled",
@@ -1373,7 +1435,7 @@ def test_diagnostic_response_redacts_runtime_secret_values(tmp_path):
 
 @pytest.mark.parametrize(
     ("endpoint_name", "browser_method"),
-    [("start_login", "check_login"), ("logout", "logout")],
+    [("validate_session", "check_login"), ("clear_session", "logout")],
 )
 def test_browser_pause_outcome_is_persisted_and_safely_notified_once(
     tmp_path, endpoint_name, browser_method
@@ -1387,7 +1449,10 @@ def test_browser_pause_outcome_is_persisted_and_safely_notified_once(
         should_pause=True,
     )
     plugin._repository = repository
-    plugin._browser = SimpleNamespace(**{browser_method: lambda: outcome})
+    plugin._browser = SimpleNamespace(
+        **{browser_method: lambda: outcome},
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
+    )
     plugin._notifications_enabled = False
     notifications = []
     plugin.post_message = lambda **kwargs: notifications.append(kwargs)
@@ -1415,7 +1480,10 @@ def test_browser_pause_notification_retries_until_confirmed(tmp_path):
         should_pause=True,
     )
     plugin._repository = repository
-    plugin._browser = SimpleNamespace(check_login=lambda: outcome)
+    plugin._browser = SimpleNamespace(
+        check_login=lambda: outcome,
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
+    )
     plugin._notifications_enabled = False
     attempts = []
 
@@ -1426,15 +1494,15 @@ def test_browser_pause_notification_retries_until_confirmed(tmp_path):
 
     plugin.post_message = flaky_post_message
 
-    first = plugin.start_login(apikey="test-api-token")
+    first = plugin.validate_session(apikey="test-api-token")
     failed = repository.get_runtime_state()
     assert first.success is False
     assert failed.browser_state is entrypoint.BrowserState.PAUSED
     assert failed.pause_notified is False
     assert repository.pending_notifications(20)[0].attempt_count == 1
 
-    second = plugin.start_login(apikey="test-api-token")
-    third = plugin.start_login(apikey="test-api-token")
+    second = plugin.validate_session(apikey="test-api-token")
+    third = plugin.validate_session(apikey="test-api-token")
 
     assert second.success is False
     assert third.success is False
@@ -1452,12 +1520,13 @@ def test_ordinary_browser_failure_does_not_pause_or_notify(tmp_path):
             success=False,
             code="UPSTREAM_ERROR",
             should_pause=False,
-        )
+        ),
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
     )
     notifications = []
     plugin.post_message = lambda **kwargs: notifications.append(kwargs)
 
-    response = plugin.start_login(apikey="test-api-token")
+    response = plugin.validate_session(apikey="test-api-token")
 
     assert response.success is False
     assert repository.state.browser_state is entrypoint.BrowserState.READY
@@ -1474,11 +1543,12 @@ def test_browser_outcome_response_replaces_unknown_code_with_public_code(tmp_pat
             success=False,
             code="Cookie=session-secret",
             should_pause=True,
-        )
+        ),
+        session_store=SimpleNamespace(status=lambda: "PRESENT"),
     )
     plugin.post_message = lambda **kwargs: None
 
-    response = plugin.start_login(apikey="test-api-token")
+    response = plugin.validate_session(apikey="test-api-token")
 
     assert response.success is False
     assert response.data == {"code": "UPSTREAM_ERROR"}
@@ -1583,7 +1653,11 @@ def test_stale_initializer_failure_does_not_clear_newer_runtime(
         if browser_count == 1:
             first_build_started.set()
             finish_first_build.wait(timeout=2)
-        return SimpleNamespace(_active_context=None, build_number=browser_count)
+        return SimpleNamespace(
+            _active_context=None,
+            build_number=browser_count,
+            session_store=SimpleNamespace(status=lambda: "MISSING"),
+        )
 
     monkeypatch.setattr(entrypoint, "BrowserManager", build_browser)
     config = {"enabled": True, "authorized_user_ids": "u1"}

@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.2.0": "移除 CB/CDP 和扫码登录，改为私有 Cookie/Storage State 导入并自动验证。",
         "v0.1.9": "新增企业微信直接澄清、兜底确认命令和安全的小红书回复补发。",
         "v0.1.8": "优化结果通知文案，展示影视名称、年份、类型、季度和可读处理结果。",
         "v0.1.7": "优化远程 CDP 页面风控检测，避免慢速 DOM locator 导致轮询误失败。",
@@ -187,8 +188,8 @@ def test_readme_documents_safe_moviepilot_operator_flow() -> None:
         "https://github.com/s450586793/MoviePilot-XhsMovieAssistant/",
         "无需额外 Docker",
         "Chromium",
-        "CloakBrowser",
-        "CDP URL",
+        "Cookie",
+        "Storage State",
         "安全限制",
         "RedNote",
         "授权用户 ID",
@@ -204,12 +205,22 @@ def test_readme_documents_safe_moviepilot_operator_flow() -> None:
     )
     assert all(phrase in readme for phrase in required_phrases)
     assert readme.index("dry-run") < readme.index("真实订阅")
-    assert "Cookie" not in readme
+    assert "CloakBrowser" not in readme
+    assert "CDP URL" not in readme
     assert "xsec_token" not in readme
     assert "MP token" not in readme
     assert "本仓库实际发布后的公开 HTTPS Git URL" not in readme
     assert "LLM key" not in readme
     assert "原始通知" not in readme
+
+
+def test_legacy_external_browser_runtime_entrypoints_are_removed() -> None:
+    assert not (ROOT / "Dockerfile").exists()
+    assert not (ROOT / "docker-compose.yml").exists()
+    assert not (ROOT / "src" / "xhs_probe" / "cli.py").exists()
+    assert "xhs-phase1-probe" not in (ROOT / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_readme_documents_browser_and_public_reply_recovery() -> None:
@@ -227,7 +238,7 @@ def test_repository_does_not_track_runtime_secrets() -> None:
     tracked = subprocess.check_output(
         ["git", "ls-files"], cwd=ROOT, text=True
     ).splitlines()
-    forbidden_names = {"app.db", "Cookies", ".env"}
+    forbidden_names = {"app.db", "Cookies", ".env", "xhs-storage-state.json"}
 
     assert not any(Path(path).name in forbidden_names for path in tracked)
     assert not any("/browser/" in f"/{path}/" for path in tracked)

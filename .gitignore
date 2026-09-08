@@ -6,5 +6,8 @@
 .workflow/
 __pycache__/
 *.py[cod]
+*.egg-info/
 data/
 logs/
+node_modules/
+xhs-storage-state.json

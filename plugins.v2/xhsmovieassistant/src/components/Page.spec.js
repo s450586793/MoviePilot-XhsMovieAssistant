@@ -91,16 +91,81 @@ describe('Page manual resolution', () => {
     expect(statusText).toContain('BROWSER_UNAVAILABLE')
   })
 
-  it('hides the private Chromium installer for an external CDP browser', async () => {
+  it('renders imported session state without a browser mode selector', async () => {
     const { wrapper } = await mountPage({
       status: {
-        browser_mode: 'CDP',
-        chromium: 'EXTERNAL',
+        session_state: 'PRESENT',
       },
     })
 
-    expect(wrapper.text()).toContain('浏览器模式CDP')
-    expect(wrapper.findAll('button').some(button => button.text() === '安装 Chromium')).toBe(false)
+    expect(wrapper.text()).toContain('登录凭据PRESENT')
+    expect(wrapper.text()).not.toContain('浏览器模式')
+    expect(wrapper.findAll('button').some(button => button.text() === '安装 Chromium')).toBe(true)
+  })
+
+  it('imports a masked Cookie and clears the field immediately', async () => {
+    const { api, wrapper } = await mountPage()
+    const input = wrapper.get('input[aria-label="小红书 Cookie"]')
+    expect(input.attributes('type')).toBe('password')
+    await input.setValue('a1=secret-a1; web_session=secret-session')
+
+    const button = wrapper.findAll('button').find(item => item.text() === '导入 Cookie')
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(api.post).toHaveBeenCalledWith(
+      'plugin/XhsMovieAssistant/session/import',
+      { cookie: 'a1=secret-a1; web_session=secret-session' },
+    )
+    expect(input.element.value).toBe('')
+  })
+
+  it('imports a selected Playwright Storage State JSON file', async () => {
+    const { api, wrapper } = await mountPage()
+    const storageState = {
+      cookies: [{
+        name: 'a1',
+        value: 'secret',
+        domain: '.xiaohongshu.com',
+        path: '/',
+        expires: -1,
+        httpOnly: false,
+        secure: true,
+        sameSite: 'Lax',
+      }],
+      origins: [],
+    }
+    const file = new File(
+      [JSON.stringify(storageState)],
+      'storageState.json',
+      { type: 'application/json' },
+    )
+    const input = wrapper.get('input[aria-label="Storage State 文件"]')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+
+    await input.trigger('change')
+    await vi.waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        'plugin/XhsMovieAssistant/session/import',
+        { storage_state: storageState },
+      )
+    })
+    expect(input.element.value).toBe('')
+  })
+
+  it('rejects malformed Storage State JSON without posting it', async () => {
+    const { api, wrapper } = await mountPage()
+    const file = new File(['{"cookies":'], 'broken.json', { type: 'application/json' })
+    const input = wrapper.get('input[aria-label="Storage State 文件"]')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+
+    await input.trigger('change')
+    await vi.waitFor(() => {
+      expect(wrapper.get('[data-alert-type="error"]').text()).toContain('JSON')
+    })
+
+    expect(api.post).not.toHaveBeenCalled()
+    expect(input.element.value).toBe('')
   })
 
   it('rejects an unknown media type until the operator explicitly selects movie or tv', async () => {

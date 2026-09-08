@@ -9,13 +9,14 @@ const loading = ref(false)
 const actionKey = ref('')
 const feedback = ref({ type: 'info', text: '', source: '' })
 const snapshot = ref({ status: {}, requests: [] })
+const cookieDraft = ref('')
+const storageFileInput = ref(null)
 const drafts = reactive({})
 
 const actionableStatuses = new Set(['NEW', 'FAILED', 'NEED_CONFIRMATION', 'DRY_RUN_MATCHED'])
 const replyableStatuses = new Set(['SUBSCRIBED', 'ALREADY_SUBSCRIBED', 'ALREADY_IN_LIBRARY', 'NEED_CONFIRMATION', 'FAILED'])
 const status = computed(() => snapshot.value.status || {})
 const requests = computed(() => Array.isArray(snapshot.value.requests) ? snapshot.value.requests : [])
-const qrSource = computed(() => status.value.qrcode || '')
 
 function unwrap(response) {
   const body = response && Object.prototype.hasOwnProperty.call(response, 'success')
@@ -157,6 +158,57 @@ async function submitManual(row) {
   await runAction(path, `请求 #${row.id} 的人工确认`, payload)
 }
 
+async function importCookie() {
+  const cookie = cookieDraft.value.trim()
+  if (!cookie) {
+    showFeedback('error', 'Cookie 不能为空。')
+    return
+  }
+  cookieDraft.value = ''
+  await runAction(
+    'plugin/XhsMovieAssistant/session/import',
+    'Cookie 导入',
+    { cookie },
+  )
+}
+
+function selectStorageState() {
+  storageFileInput.value?.click()
+}
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.addEventListener('load', () => resolve(String(reader.result || '')))
+    reader.addEventListener('error', () => reject(new Error('无法读取 Storage State 文件。')))
+    reader.readAsText(file)
+  })
+}
+
+async function importStorageState(event) {
+  const input = event.target
+  const file = input?.files?.[0]
+  if (input) input.value = ''
+  if (!file) return
+  if (file.size > 1024 * 1024) {
+    showFeedback('error', 'Storage State 文件不能超过 1 MB。')
+    return
+  }
+  try {
+    const storageState = JSON.parse(await readFile(file))
+    if (!storageState || Array.isArray(storageState) || typeof storageState !== 'object') {
+      throw new Error('Storage State JSON 格式无效。')
+    }
+    await runAction(
+      'plugin/XhsMovieAssistant/session/import',
+      'Storage State 导入',
+      { storage_state: storageState },
+    )
+  } catch (error) {
+    showFeedback('error', message(error, 'Storage State 导入失败。'))
+  }
+}
+
 onMounted(loadState)
 </script>
 
@@ -177,7 +229,6 @@ onMounted(loadState)
     <section class="xhs-movie-page__status" aria-label="缓存服务状态">
       <dl>
         <div><dt>插件</dt><dd>{{ status.activity || 'IDLE' }}</dd></div>
-        <div><dt>浏览器模式</dt><dd>{{ status.browser_mode || 'EMBEDDED' }}</dd></div>
         <div><dt>浏览器</dt><dd>{{ status.browser || 'UNKNOWN' }}</dd></div>
         <div>
           <dt>Chromium</dt>
@@ -186,9 +237,21 @@ onMounted(loadState)
           </dd>
         </div>
         <div><dt>登录</dt><dd>{{ status.login || 'UNKNOWN' }}</dd></div>
+        <div><dt>登录凭据</dt><dd>{{ status.session_state || 'MISSING' }}</dd></div>
         <div><dt>暂停原因</dt><dd>{{ status.pause_code || '无' }}</dd></div>
       </dl>
-      <VImg v-if="qrSource" :src="qrSource" width="180" height="180" contain class="xhs-movie-page__qr" alt="小红书登录二维码" />
+    </section>
+
+    <section class="xhs-movie-page__section" aria-labelledby="session-import">
+      <div class="xhs-movie-page__section-title">
+        <h2 id="session-import">登录凭据</h2>
+      </div>
+      <div class="xhs-movie-page__session-import">
+        <VTextField v-model="cookieDraft" label="小红书 Cookie" type="password" autocomplete="new-password" density="comfortable" @keyup.enter="importCookie" />
+        <VBtn prepend-icon="mdi-cookie-check-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/import'" @click="importCookie">导入 Cookie</VBtn>
+        <input ref="storageFileInput" type="file" accept="application/json,.json" aria-label="Storage State 文件" hidden @change="importStorageState">
+        <VBtn prepend-icon="mdi-file-upload-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/import'" @click="selectStorageState">导入 Storage State</VBtn>
+      </div>
     </section>
 
     <section class="xhs-movie-page__section" aria-labelledby="management-actions">
@@ -196,11 +259,11 @@ onMounted(loadState)
         <h2 id="management-actions">管理与诊断</h2>
       </div>
       <div class="xhs-movie-page__tool-grid">
-        <VBtn v-if="status.browser_mode !== 'CDP'" prepend-icon="mdi-download" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/chromium/install'" @click="runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')">安装 Chromium</VBtn>
-        <VBtn prepend-icon="mdi-qrcode-scan" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/login/start'" @click="runAction('plugin/XhsMovieAssistant/login/start', '登录二维码生成')">生成登录二维码</VBtn>
+        <VBtn prepend-icon="mdi-download" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/chromium/install'" @click="runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')">安装 Chromium</VBtn>
+        <VBtn prepend-icon="mdi-shield-check-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/validate'" @click="runAction('plugin/XhsMovieAssistant/session/validate', '登录验证')">验证登录</VBtn>
+        <VBtn prepend-icon="mdi-logout" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/clear'" @click="runAction('plugin/XhsMovieAssistant/session/clear', '清除登录')">清除登录</VBtn>
         <VBtn prepend-icon="mdi-refresh" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/poll'" @click="runAction('plugin/XhsMovieAssistant/poll', '立即轮询')">立即轮询</VBtn>
         <VBtn prepend-icon="mdi-play" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/resume'" @click="runAction('plugin/XhsMovieAssistant/resume', '恢复轮询')">恢复轮询</VBtn>
-        <VBtn prepend-icon="mdi-logout" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/logout'" @click="runAction('plugin/XhsMovieAssistant/logout', '退出登录')">退出登录</VBtn>
         <VBtn prepend-icon="mdi-robot-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/test/ai'" @click="runAction('plugin/XhsMovieAssistant/test/ai', 'AI 测试', { title: '星际穿越' })">测试 AI</VBtn>
         <VBtn prepend-icon="mdi-movie-search-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/test/moviepilot'" @click="runAction('plugin/XhsMovieAssistant/test/moviepilot', 'MoviePilot 测试', { title: '星际穿越', media_type: 'movie' })">测试 MoviePilot</VBtn>
         <VBtn prepend-icon="mdi-bell-check-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/test/notification'" @click="runAction('plugin/XhsMovieAssistant/test/notification', '通知测试')">测试通知</VBtn>
@@ -335,6 +398,7 @@ dd { font-size: 14px; margin: 3px 0 0; overflow-wrap: anywhere; }
 .xhs-movie-page__section-title span { color: var(--xhs-muted); font-size: 14px; }
 
 .xhs-movie-page__tool-grid,
+.xhs-movie-page__session-import,
 .xhs-movie-request__editor {
   display: grid;
   gap: 8px;
@@ -342,6 +406,7 @@ dd { font-size: 14px; margin: 3px 0 0; overflow-wrap: anywhere; }
 }
 
 .xhs-movie-page__header :deep(.v-btn),
+.xhs-movie-page__session-import :deep(.v-btn),
 .xhs-movie-page__tool-grid :deep(.v-btn),
 .xhs-movie-request__actions :deep(.v-btn) {
   min-height: 44px;
@@ -362,6 +427,7 @@ dd { font-size: 14px; margin: 3px 0 0; overflow-wrap: anywhere; }
   .xhs-movie-page { padding: 24px; }
   .xhs-movie-page__status { grid-template-columns: minmax(0, 1fr) auto; }
   .xhs-movie-page__status dl { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+  .xhs-movie-page__session-import { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
   .xhs-movie-page__tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .xhs-movie-request__editor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

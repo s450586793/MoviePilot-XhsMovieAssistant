@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.1.9-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.1.9` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.2.0` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -31,7 +31,7 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 - 通过 MoviePilot 已配置的消息渠道发送处理结果。
 - 无法确定时，可直接在企业微信回复明确片名；插件页人工确认继续作为备用入口。
 - 可选使用固定模板回复原始小红书评论；不会让 AI 自由生成公开回复。
-- 提供 Vue 管理页，可查看状态、扫码、人工确认、重处理、补发回复、忽略和运行诊断。
+- 提供 Vue 管理页，可导入 Cookie/Storage State，并查看状态、人工确认、重处理、补发回复、忽略和运行诊断。
 
 ## 系统要求
 
@@ -39,33 +39,32 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 - NAS 或主机能够访问所选的小红书/RedNote 站点和 GitHub 插件仓库。
 - MoviePilot 已配置可用的 AI 服务；插件直接复用该配置。
 - 如需在企业微信直接确认，MoviePilot 的企业微信通知渠道需要配置 `WECHAT_ADMINS`。
-- 使用内置浏览器时，MoviePilot 容器需要具备运行 Playwright Chromium 的系统依赖。
-- 使用 CloakBrowser/CDP 时，MoviePilot 必须能访问已启动 Profile 的 CDP URL。
+- MoviePilot 容器需要具备运行 Playwright Chromium 的系统依赖。
 
 这是纯 MoviePilot 插件，插件本身**无需额外 Docker 容器**，也不需要配置 MP 地址
-或 MP Token。CloakBrowser 是可选的外部浏览器；已有实例可以直接复用，没有时仍可
-选择内置 Chromium。仓库根目录的 `Dockerfile`、`docker-compose.yml` 和
-`src/xhs_probe/` 是早期 Phase 1-3 验证工具，不是插件安装入口。
+或 MP Token。插件只使用自身安装的 Chromium 和私有 Storage State，不连接外部
+浏览器服务。`src/xhs_probe/` 只保留离线协议解析和数据导入代码，不是插件安装入口。
 
-## 浏览器模式
+## 登录方案
 
-- `内置 Chromium`：默认模式，安装最简单，但 NAS 上的 Headless 浏览器可能被站点
-  导向“安全限制”页面。插件识别到该页面后会立即暂停，不会反复重试。
-- `CloakBrowser / CDP`：推荐用于已部署 CloakBrowser 的 NAS。插件只通过 CDP
-  连接已有可见浏览器，不关闭 Profile，也不接管其生命周期。
+插件支持粘贴完整 Cookie 请求头，或导入 Playwright `storageState.json`。凭据会先按
+当前选择的小红书/RedNote 站点过滤，再以 `0600` 权限保存到 MoviePilot 插件私有数据
+目录。插件设置、状态接口和日志均不会回显 Cookie 值。
 
-使用 CloakBrowser 时，先在 Manager 中创建专用 Profile：关闭 `Headless`、开启
-`Auto launch`，并保持 Profile 正在运行。随后在插件设置中选择
-`CloakBrowser / CDP`，填写 Manager 提供的 `CDP URL` 和 Access Token。建议 URL
-使用 MoviePilot 容器能够访问的 NAS 地址，例如：
+推荐使用 Storage State，因为它可以同时携带 Cookie 和站点 Local Storage。在电脑上
+安装 Node.js 后，可使用 Playwright 打开本地浏览器并在其中人工登录：
 
-```text
-http://NAS-IP:9050/api/profiles/PROFILE-ID/cdp
+```bash
+npx playwright codegen --save-storage=storageState.json https://www.xiaohongshu.com
 ```
 
-Access Token 属于敏感凭据，只应保存在 MoviePilot 插件配置中；不要写入仓库、日志、
-Issue 或截图。CB Profile 必须专用于助手账号，因为“退出登录”会清除该 Profile 中的
-站点会话。
+RedNote 账号将地址改为 `https://www.rednote.com`。登录完成后关闭 Playwright，再在插件
+管理页选择该 JSON 文件。Cookie 模式可从浏览器开发者工具 Network 请求的 Request
+Headers 中复制完整 `Cookie` 值；不要使用只包含非 HttpOnly 项的 `document.cookie`。
+
+Cookie 和 `storageState.json` 都等同于账号登录凭据，只应在自己的设备与 MoviePilot
+之间传递。不要上传到 GitHub、Issue、聊天、截图或日志。导入后插件会立即访问所选站点
+验证登录状态，验证成功才显示 `LOGGED_IN`；验证失败不会自动循环重试。
 
 ## 安装
 
@@ -77,9 +76,8 @@ Issue 或截图。CB Profile 必须专用于助手账号，因为“退出登录
    ```
 
 3. 刷新插件市场，搜索“小红书影视助手”，点击安装。
-4. 若使用默认模式，打开插件详情页并点击“安装 Chromium”。安装是后台任务，完成前
-   不要生成登录二维码或启用轮询；通常不需要重启 DSM。使用 CloakBrowser/CDP 时
-   不需要执行该安装。
+4. 打开插件详情页并点击“安装 Chromium”。安装是后台任务，完成前不要导入登录凭据
+   或启用轮询；通常不需要重启 DSM。
 
 MoviePilot V2 读取该仓库 `main` 分支的 `package.v2.json`，插件更新发布后只需
 刷新插件市场并执行更新。若 NAS 无法访问 GitHub，请先配置 MoviePilot 的 GitHub
@@ -91,11 +89,10 @@ MoviePilot V2 读取该仓库 `main` 分支的 `package.v2.json`，插件更新�
 2. 填写允许发起请求的稳定“授权用户 ID”。可以从主账号网页版个人主页 URL，或
    一次已确认的 `@` 通知请求中核对该 ID；不要使用昵称、展示名或可变短 ID。
    多个 ID 可用英文逗号或换行分隔。
-3. 选择浏览器模式和助手小号实际使用的站点。使用 CloakBrowser/CDP 时先填写并保存
-   CDP URL 与 Access Token，再点击“生成登录二维码”。用专门的小红书助手账号扫码；
-   若登录页自动跳转国际站，选择 `RedNote` 后重新生成二维码。
-4. 扫码完成后刷新插件页：Chromium 应显示 `AVAILABLE`，浏览器应为 `READY`，
-   登录状态应不再是 `WAITING_FOR_SCAN`。然后保存设置。
+3. 选择助手小号实际使用的站点并保存设置，然后在管理页粘贴完整 Cookie，或选择
+   Playwright 生成的 `storageState.json`。导入会自动验证，站点选择错误时不会通过。
+4. 导入完成后刷新插件页：Chromium 应显示 `AVAILABLE`，登录凭据应显示 `PRESENT`，
+   登录状态应显示 `LOGGED_IN`。
 5. 先点击“测试 AI”“测试 MoviePilot”和“测试通知”，分别确认现有 MP 能力正常。需要微信确认时，还要确保接收人的企业微信用户 ID 已列入该渠道的 `WECHAT_ADMINS`。
 
 ## 先验证，再订阅
@@ -138,7 +135,7 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 
 ## 状态说明
 
-浏览器状态：`READY` 表示可继续；`PAUSED` 表示风险控制、会话或浏览器问题已暂停轮询；`ERROR` 表示最近一次浏览器操作失败，先检查页面显示的错误码和对应恢复项，再恢复轮询。登录状态 `WAITING_FOR_SCAN` 表示等待扫码，`LOGGED_OUT` 表示已退出。活动状态 `IDLE` 表示空闲，`POLL` 表示正在轮询，`START_FAILED` 或 `FAILED` 表示需要查看下方恢复步骤。
+浏览器状态：`READY` 表示可继续；`PAUSED` 表示风险控制、会话或浏览器问题已暂停轮询；`ERROR` 表示最近一次浏览器操作失败，先检查页面显示的错误码和对应恢复项，再恢复轮询。登录凭据 `PRESENT` 表示插件私有 Storage State 已存在，`MISSING` 表示需要导入；登录状态 `LOGGED_IN` 表示验证成功，`LOGGED_OUT` 表示凭据无效或已清除。活动状态 `IDLE` 表示空闲，`POLL` 表示正在轮询，`START_FAILED` 或 `FAILED` 表示需要查看下方恢复步骤。
 
 请求状态：`NEW` 为待处理，`FETCHED` 为已获取，`RESOLVING` 为 AI 正在识别；`NEED_CONFIRMATION` 表示信息不足或有歧义，需要人工确认；`NOT_MEDIA` 表示不是影视请求；`MATCHED` 表示已找到候选；`DRY_RUN_MATCHED` 表示 dry-run 匹配成功；`ALREADY_IN_LIBRARY` 和 `ALREADY_SUBSCRIBED` 表示无需再次订阅；`SUBSCRIBED` 表示已创建订阅；`FAILED` 表示本次失败；`IGNORED` 表示人工忽略。
 
@@ -150,10 +147,10 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 
 | 现象 | 处理 |
 | --- | --- |
-| 出现 `300012`、验证码或站点风险控制 | 停止高频重试，在浏览器页面人工完成验证；验证完成后点击“恢复轮询”。 |
-| 二维码返回 `XHS_RISK_CONTROL` 或出现“安全限制” | 不要反复生成二维码；切换到专用的可见 CloakBrowser/CDP Profile，人工完成验证。 |
-| 登录过期、`LOGGED_OUT` 或 `LOGIN_REQUIRED` | 生成新的二维码完成扫码；如账号跳转国际站，确认站点仍选择 `RedNote`。 |
-| CloakBrowser/CDP 连接失败 | 确认 Profile 正在运行、CDP URL 可从 MoviePilot 容器访问，并重新填写正确的 Access Token。 |
+| 出现 `300012`、验证码或站点风险控制 | 停止高频重试，在电脑浏览器中人工完成验证并重新导出 Storage State；导入成功后插件会恢复登录暂停。 |
+| 导入后出现“安全限制” | 不要反复导入或立即轮询；确认 Cookie/Storage State 来自所选站点和助手小号，并等待风控解除。 |
+| 登录过期、`LOGGED_OUT` 或 `LOGIN_REQUIRED` | 在电脑浏览器中重新登录，导出并导入新的 Cookie/Storage State。 |
+| `INVALID_CREDENTIALS` | 确认粘贴的是完整 Cookie 请求头，或文件是合法的 Playwright `storageState.json`，并与插件选择的站点一致。 |
 | Chromium 安装失败或缺少系统库 | 按 MoviePilot 部署镜像/宿主机的 Chromium 依赖说明补齐库后，重新点击“安装 Chromium”。不要把浏览器依赖写入插件配置。 |
 | AI 测试失败或 AI 未启用 | 先在 MoviePilot 系统设置中配置并启用 AI，再使用插件的“测试 AI”确认；插件不保存模型凭据。 |
 | `NEED_CONFIRMATION` 或歧义结果 | 直接回复企业微信通知；会话丢失时使用 `/xhs_confirm`，插件页“人工确认”作为备用。不要仅凭相近标题开启真实订阅。 |
@@ -164,9 +161,9 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 
 ## 安全与隐私
 
-- 小红书账号密码不会写入代码或配置；扫码后的浏览器 Profile 保存在 MoviePilot
-  插件数据目录中。
-- 浏览器 Profile、SQLite 数据库、日志、`.env` 和各类会话凭据均被排除在
+- 小红书账号密码不会写入代码或插件配置；导入的 Cookie/Storage State 只保存在
+  MoviePilot 插件私有数据目录中，文件权限为 `0600`。
+- Storage State、SQLite 数据库、日志、`.env` 和各类会话凭据均被排除在
   Git 仓库之外。
 - 瞬时笔记访问凭据只用于当前浏览器会话，不进入数据库、AI 输入或日志。
 - 完整稳定用户 ID 不会显示在管理页或日志中。
@@ -197,17 +194,17 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.1.9` 发布验证结果为：Python `461 passed`、覆盖率 `88.54%`、Vue/Vitest
-`18 passed`、MoviePilot `v2.15.6` 隔离 import/route smoke 通过。该 smoke 不调用
+当前 `v0.2.0` 发布验证：Python `463 passed`，总覆盖率 `88.72%`；Vue
+`21 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 
 ## 实现证据
 
-仓库中保留了 Phase 1–3 的离线验证证据：`src/xhs_probe/` 包含早期捕获与导入工具，`tests/test_capture.py`、`tests/test_ingest.py` 和 `tests/test_phase3_cli.py` 覆盖其契约。它们用于追溯和开发验证；日常安装、扫码、授权、状态查看与恢复都应在 MoviePilot 插件界面完成。
+仓库中保留了 Phase 1–3 的离线验证证据：`src/xhs_probe/` 包含早期捕获与导入工具，`tests/test_capture.py`、`tests/test_ingest.py` 和 `tests/test_phase3_cli.py` 覆盖其契约。它们用于追溯和开发验证；日常安装、凭据导入、授权、状态查看与恢复都应在 MoviePilot 插件界面完成。
 
 ## 许可与反馈
 
 本项目使用 [MIT License](LICENSE)。问题反馈请提交到
 [GitHub Issues](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/issues)，
 并附上 MoviePilot 版本、站点类型、脱敏后的错误码和复现步骤；不要上传浏览器
-会话凭据、二维码、完整用户 ID、Token 或未经脱敏的站点响应。
+会话凭据、完整用户 ID、Token 或未经脱敏的站点响应。

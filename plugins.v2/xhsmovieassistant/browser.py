@@ -1,7 +1,8 @@
-"""Playwright lifecycle, login, and risk handling for the plugin Profile."""
+"""Playwright lifecycle, imported login state, and risk handling."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -18,12 +19,6 @@ _SITE_ORIGINS = {
     "xiaohongshu": "https://www.xiaohongshu.com",
     "rednote": "https://www.rednote.com",
 }
-_BROWSER_MODES = frozenset({"embedded", "cdp"})
-_CDP_CONNECT_TIMEOUT_MS = 10_000
-_QR_SELECTOR = (
-    ".login-container .qrcode-img:visible, .qrcode-container img:visible, "
-    "[class*='qrcode'] img:visible"
-)
 _LOGIN_SELECTOR = ".login-btn:visible, .login-container:visible"
 _AUTHENTICATED_PROFILE_SELECTOR = (
     'a[title="我"][href^="/user/profile/"]:visible'
@@ -50,6 +45,8 @@ _JWT_PATTERN = re.compile(
     r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"
 )
 _USERINFO_URL_PATTERN = re.compile(r"https?://[^\s/]*@", re.IGNORECASE)
+_COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_MAX_CREDENTIAL_BYTES = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -67,8 +64,163 @@ class BrowserBusyError(RuntimeError):
     """Raised when the current thread tries to re-enter a browser operation."""
 
 
+class SessionStore:
+    """Persist one site's normalized Playwright Storage State privately."""
+
+    def __init__(self, data_path: str | Path, base_url: str) -> None:
+        self.data_path = Path(data_path)
+        self.path = self.data_path / "xhs-storage-state.json"
+        hostname = urlsplit(base_url).hostname
+        if not hostname:
+            raise ValueError("invalid site origin")
+        self.cookie_domain = "." + hostname.removeprefix("www.")
+
+    def import_cookie_header(self, cookie_header: str) -> OperationResult:
+        """Convert a browser Cookie header into Playwright Storage State."""
+        if not isinstance(cookie_header, str):
+            return _invalid_credentials()
+        try:
+            encoded = cookie_header.encode("utf-8")
+        except UnicodeEncodeError:
+            return _invalid_credentials()
+        if (
+            not encoded
+            or len(encoded) > _MAX_CREDENTIAL_BYTES
+            or any(
+                ord(character) < 0x20 or ord(character) == 0x7F
+                for character in cookie_header
+            )
+        ):
+            return _invalid_credentials()
+        cookie_header = re.sub(
+            r"^\s*cookie\s*:\s*",
+            "",
+            cookie_header,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+        cookies: list[dict[str, Any]] = []
+        for item in cookie_header.split(";"):
+            item = item.strip()
+            if not item:
+                continue
+            name, separator, value = item.partition("=")
+            name = name.strip()
+            if not separator or not _COOKIE_NAME_PATTERN.fullmatch(name):
+                return _invalid_credentials()
+            cookies.append(
+                {
+                    "name": name,
+                    "value": value.strip(),
+                    "domain": self.cookie_domain,
+                    "path": "/",
+                    "expires": -1,
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            )
+        if not cookies:
+            return _invalid_credentials()
+
+        self._write({"cookies": cookies, "origins": []})
+        return OperationResult(
+            success=True,
+            data={"credential_type": "cookie", "cookie_count": len(cookies)},
+        )
+
+    def status(self) -> str:
+        """Return whether a private Storage State file is available."""
+        return "PRESENT" if self.path.is_file() else "MISSING"
+
+    def clear(self) -> None:
+        """Remove the imported login state without exposing its contents."""
+        self.path.unlink(missing_ok=True)
+
+    def import_storage_state(self, state: Mapping[str, Any]) -> OperationResult:
+        """Filter a Playwright Storage State document to the configured site."""
+        if not isinstance(state, Mapping):
+            return _invalid_credentials()
+        try:
+            encoded = json.dumps(state, ensure_ascii=True).encode("utf-8")
+        except (TypeError, ValueError):
+            return _invalid_credentials()
+        if len(encoded) > _MAX_CREDENTIAL_BYTES:
+            return _invalid_credentials()
+
+        raw_cookies = state.get("cookies", [])
+        raw_origins = state.get("origins", [])
+        if not isinstance(raw_cookies, list) or not isinstance(raw_origins, list):
+            return _invalid_credentials()
+        cookies: list[dict[str, Any]] = []
+        for cookie in raw_cookies:
+            if not isinstance(cookie, Mapping):
+                return _invalid_credentials()
+            if not self._allows_hostname(str(cookie.get("domain") or "")):
+                continue
+            normalized = _normalize_storage_cookie(cookie)
+            if normalized is None:
+                return _invalid_credentials()
+            cookies.append(normalized)
+        origins: list[dict[str, Any]] = []
+        for origin in raw_origins:
+            if not isinstance(origin, Mapping):
+                return _invalid_credentials()
+            if not self._allows_origin(str(origin.get("origin") or "")):
+                continue
+            normalized_origin = _normalize_storage_origin(origin)
+            if normalized_origin is None:
+                return _invalid_credentials()
+            origins.append(normalized_origin)
+        if not cookies:
+            return _invalid_credentials()
+
+        self._write({"cookies": cookies, "origins": origins})
+        return OperationResult(
+            success=True,
+            data={"credential_type": "storage_state", "cookie_count": len(cookies)},
+        )
+
+    def _allows_hostname(self, value: str) -> bool:
+        hostname = value.strip().casefold().lstrip(".")
+        root = self.cookie_domain.lstrip(".").casefold()
+        return bool(hostname == root or hostname.endswith(f".{root}"))
+
+    def _allows_origin(self, value: str) -> bool:
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return False
+        return bool(
+            parsed.scheme == "https"
+            and parsed.username is None
+            and parsed.password is None
+            and self._allows_hostname(parsed.hostname or "")
+        )
+
+    def _write(self, state: Mapping[str, Any]) -> None:
+        self.data_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".json.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(state, output, ensure_ascii=True, separators=(",", ":"))
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.path)
+            self.path.chmod(0o600)
+        except Exception:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+
 class BrowserManager:
-    """Own one-operation persistent contexts backed by a shared Profile."""
+    """Own isolated Chromium contexts backed by imported Storage State."""
 
     def __init__(
         self,
@@ -76,25 +228,14 @@ class BrowserManager:
         site: str,
         proxy: Mapping[str, Any] | None,
         playwright_factory: Callable[[], Any] | None = None,
-        *,
-        browser_mode: str = "embedded",
-        cdp_url: str | None = None,
-        cdp_token: str | None = None,
     ) -> None:
         if site not in _SITE_ORIGINS:
             raise ValueError("unsupported site")
-        if browser_mode not in _BROWSER_MODES:
-            raise ValueError("unsupported browser mode")
-        if browser_mode == "cdp" and not str(cdp_url or "").strip():
-            raise ValueError("CDP URL is required")
         self.data_path = Path(data_path)
-        self.profile_path = self.data_path / "browser"
         self.browser_path = self.data_path / "ms-playwright"
         self.base_url = _SITE_ORIGINS[site]
+        self.session_store = SessionStore(self.data_path, self.base_url)
         self.proxy = proxy
-        self.browser_mode = browser_mode
-        self.cdp_url = str(cdp_url or "").strip()
-        self.cdp_token = str(cdp_token or "").strip() or None
         self._playwright_factory = playwright_factory or _default_playwright
         self._active_context: Any = None
 
@@ -106,13 +247,12 @@ class BrowserManager:
     def close_active_context(self) -> None:
         """Interrupt only a browser context owned by this plugin instance."""
         context = self._active_context
-        if context is not None and self.browser_mode == "embedded":
+        if context is not None:
+            self._active_context = None
             context.close()
 
     def chromium_status(self) -> OperationResult:
         """Report whether a Chromium executable exists in the private cache."""
-        if self.browser_mode == "cdp":
-            return OperationResult(success=True, data="EXTERNAL")
         executable = self.executable_path
         if executable is None:
             return OperationResult(
@@ -124,12 +264,6 @@ class BrowserManager:
 
     def install_chromium(self) -> OperationResult:
         """Install Playwright Chromium with fixed arguments and a bounded timeout."""
-        if self.browser_mode == "cdp":
-            return OperationResult(
-                success=True,
-                message="External browser does not require Chromium installation",
-                data="EXTERNAL",
-            )
         with _profile_operation():
             return self._install_chromium()
 
@@ -175,84 +309,51 @@ class BrowserManager:
 
     @contextmanager
     def session(self) -> Iterator[Any]:
-        """Yield one page while holding the process-wide Profile operation lock."""
+        """Yield one page loaded from the private Storage State file."""
         with _profile_operation():
             playwright = None
+            browser = None
             context = None
+            persist_session = self.session_store.status() == "PRESENT"
             try:
-                self.profile_path.mkdir(parents=True, exist_ok=True)
                 self.browser_path.mkdir(parents=True, exist_ok=True)
                 executable = self.executable_path
                 if executable is None:
-                    if self.browser_mode == "embedded":
-                        raise FileNotFoundError("Chromium is not installed")
+                    raise FileNotFoundError("Chromium is not installed")
                 playwright = self._playwright_factory()
                 chromium = playwright.chromium
-                owns_context = self.browser_mode == "embedded"
-                if owns_context:
-                    context = chromium.launch_persistent_context(
-                        user_data_dir=self.profile_path,
-                        executable_path=executable,
-                        headless=True,
-                        proxy=self.proxy,
-                        viewport={"width": 1280, "height": 900},
-                        locale="zh-CN",
-                    )
-                else:
-                    options: dict[str, Any] = {"timeout": _CDP_CONNECT_TIMEOUT_MS}
-                    if self.cdp_token:
-                        options["headers"] = {
-                            "Authorization": f"Bearer {self.cdp_token}"
-                        }
-                    browser = chromium.connect_over_cdp(self.cdp_url, **options)
-                    if not browser.contexts:
-                        raise RuntimeError("CDP browser has no persistent context")
-                    context = browser.contexts[0]
+                browser = chromium.launch(
+                    executable_path=executable,
+                    headless=True,
+                    proxy=self.proxy,
+                )
+                context_options: dict[str, Any] = {
+                    "viewport": {"width": 1280, "height": 900},
+                    "locale": "zh-CN",
+                }
+                if persist_session:
+                    context_options["storage_state"] = self.session_store.path
+                context = browser.new_context(**context_options)
                 self._active_context = context
-                if owns_context:
-                    page = context.pages[0] if context.pages else context.new_page()
-                else:
-                    page = _matching_page(context.pages, self.base_url)
-                    if page is None:
-                        page = context.new_page()
-                yield page
+                yield context.new_page()
             finally:
                 try:
-                    if context is not None and self.browser_mode == "embedded":
-                        context.close()
+                    if context is not None:
+                        try:
+                            if persist_session and self._active_context is context:
+                                self.session_store.import_storage_state(
+                                    context.storage_state()
+                                )
+                        finally:
+                            context.close()
                 finally:
                     self._active_context = None
-                    if playwright is not None:
-                        playwright.stop()
-
-    def capture_login_qrcode(self) -> OperationResult:
-        """Open the configured site and return the visible login QR as PNG bytes."""
-        try:
-            with self.session() as page:
-                response = page.goto(self.base_url, wait_until="domcontentloaded")
-                risk = self.detect_risk(page, _response_status(response))
-                if not risk.success:
-                    return risk
-                locator = page.locator(_QR_SELECTOR).first
-                locator.wait_for(state="visible", timeout=10_000)
-                png = locator.screenshot(type="png")
-                if not isinstance(png, bytes):
-                    return OperationResult(
-                        success=False,
-                        code="UPSTREAM_ERROR",
-                        message="QR code image was invalid",
-                    )
-                return OperationResult(success=True, data=png)
-        except Exception as error:
-            if _is_timeout(error):
-                return OperationResult(
-                    success=False,
-                    code="LOGIN_REQUIRED",
-                    message="Login QR code was not found",
-                )
-            if isinstance(error, BrowserBusyError):
-                raise
-            return _browser_failure()
+                    try:
+                        if browser is not None:
+                            browser.close()
+                    finally:
+                        if playwright is not None:
+                            playwright.stop()
 
     def check_login(self) -> OperationResult:
         """Check initial state first and use login DOM as a bounded fallback."""
@@ -262,6 +363,27 @@ class BrowserManager:
             raise
         except Exception:
             return _browser_failure()
+
+    def import_credentials(
+        self,
+        *,
+        cookie_header: str | None = None,
+        storage_state: Mapping[str, Any] | None = None,
+    ) -> OperationResult:
+        """Import one credential format and immediately validate it on the site."""
+        if (cookie_header is None) == (storage_state is None):
+            return _invalid_credentials()
+        imported = (
+            self.session_store.import_cookie_header(cookie_header)
+            if cookie_header is not None
+            else self.session_store.import_storage_state(storage_state)
+        )
+        if not imported.success:
+            return imported
+        validated = self.check_login()
+        if not validated.success:
+            return validated
+        return OperationResult(success=True, data=imported.data)
 
     def _check_login(self) -> OperationResult:
         with self.session() as page:
@@ -304,20 +426,20 @@ class BrowserManager:
             )
 
     def logout(self) -> OperationResult:
-        """Clear cookies and web storage from the persistent Profile."""
+        """Clear cookies, web storage, and the imported Storage State file."""
         try:
             with self.session() as page:
                 response = page.goto(self.base_url, wait_until="domcontentloaded")
                 risk = self.detect_risk(page, _response_status(response))
                 self._active_context.clear_cookies()
                 page.evaluate("window.localStorage.clear(); window.sessionStorage.clear();")
-                if not risk.success:
-                    return risk
-            return OperationResult(success=True)
         except BrowserBusyError:
             raise
         except Exception:
+            self.session_store.clear()
             return _browser_failure()
+        self.session_store.clear()
+        return risk if not risk.success else OperationResult(success=True)
 
     def detect_risk(
         self, page: Any, response_status: int | None = None
@@ -451,20 +573,74 @@ def _find_chromium_executable(browser_path: Path) -> Path | None:
     return None
 
 
-def _matching_page(pages: list[Any], base_url: str) -> Any | None:
-    expected_hostname = urlsplit(base_url).hostname or ""
-    for page in pages:
-        try:
-            hostname = urlsplit(str(page.url)).hostname or ""
-        except ValueError:
-            continue
-        if hostname == expected_hostname or hostname.endswith(f".{expected_hostname}"):
-            return page
-    return None
-
-
 def _pause_result(code: str, message: str) -> OperationResult:
     return OperationResult(success=False, code=code, message=message, should_pause=True)
+
+
+def _invalid_credentials() -> OperationResult:
+    return OperationResult(
+        success=False,
+        code="INVALID_CREDENTIALS",
+        message="Login credentials are invalid",
+    )
+
+
+def _normalize_storage_cookie(cookie: Mapping[str, Any]) -> dict[str, Any] | None:
+    name = cookie.get("name")
+    value = cookie.get("value")
+    domain = cookie.get("domain")
+    path = cookie.get("path")
+    expires = cookie.get("expires")
+    http_only = cookie.get("httpOnly")
+    secure = cookie.get("secure")
+    same_site = cookie.get("sameSite")
+    if (
+        not isinstance(name, str)
+        or not _COOKIE_NAME_PATTERN.fullmatch(name)
+        or not isinstance(value, str)
+        or not isinstance(domain, str)
+        or not isinstance(path, str)
+        or not path.startswith("/")
+        or isinstance(expires, bool)
+        or not isinstance(expires, (int, float))
+        or not isinstance(http_only, bool)
+        or not isinstance(secure, bool)
+        or same_site not in {"Strict", "Lax", "None"}
+    ):
+        return None
+    normalized = {
+        "name": name,
+        "value": value,
+        "domain": domain,
+        "path": path,
+        "expires": expires,
+        "httpOnly": http_only,
+        "secure": secure,
+        "sameSite": same_site,
+    }
+    partition_key = cookie.get("partitionKey")
+    if partition_key is not None:
+        if not isinstance(partition_key, str):
+            return None
+        normalized["partitionKey"] = partition_key
+    return normalized
+
+
+def _normalize_storage_origin(origin: Mapping[str, Any]) -> dict[str, Any] | None:
+    value = origin.get("origin")
+    local_storage = origin.get("localStorage", [])
+    if not isinstance(value, str) or not isinstance(local_storage, list):
+        return None
+    normalized_items: list[dict[str, str]] = []
+    for item in local_storage:
+        if not isinstance(item, Mapping):
+            return None
+        name = item.get("name")
+        stored_value = item.get("value")
+        if not isinstance(name, str) or not isinstance(stored_value, str):
+            return None
+        normalized_items.append({"name": name, "value": stored_value})
+    return {"origin": value, "localStorage": normalized_items}
 
 
 def _browser_failure() -> OperationResult:
@@ -480,10 +656,6 @@ def _response_status(response: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     return None
-
-
-def _is_timeout(error: Exception) -> bool:
-    return isinstance(error, TimeoutError) or error.__class__.__name__ == "TimeoutError"
 
 
 def _bounded_output(*parts: object) -> str:

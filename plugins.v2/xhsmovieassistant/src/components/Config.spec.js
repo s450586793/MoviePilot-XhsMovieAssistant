@@ -13,9 +13,6 @@ const expectedDefaults = {
   reply_confirmation_enabled: false,
   reply_failure_enabled: false,
   site: 'xiaohongshu',
-  browser_mode: 'embedded',
-  cdp_url: '',
-  cdp_token: '',
   authorized_user_ids: '',
   poll_interval_minutes: 2,
   confidence_threshold: 0.85,
@@ -72,15 +69,14 @@ describe('Config', () => {
     }
   })
 
-  it('shows CDP connection fields and masks the access token', async () => {
+  it('keeps browser sessions out of persisted plugin settings', () => {
     const wrapper = mount(Config, {
       props: { initialConfig: {} },
       global: { stubs: vuetifyStubs },
     })
 
-    await wrapper.get('select[aria-label="浏览器模式"]').setValue('cdp')
-
-    expect(wrapper.get('input[aria-label="CloakBrowser CDP URL"]').exists()).toBe(true)
-    expect(wrapper.get('input[aria-label="CDP Access Token"]').attributes('type')).toBe('password')
+    expect(wrapper.find('select[aria-label="浏览器模式"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="CloakBrowser CDP URL"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="CDP Access Token"]').exists()).toBe(false)
   })
 })
