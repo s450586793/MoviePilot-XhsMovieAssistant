@@ -349,6 +349,54 @@ def test_active_plugin_input_rearms_session_when_slash_command_is_invalid(
     assert [call["payload"] for call in rearmed] == [{"request_id": 21}]
 
 
+@pytest.mark.parametrize("input_text", ["/xhs_confirm7 片名", "/version"])
+def test_active_plugin_input_rearms_session_without_confirming_other_commands(
+    tmp_path,
+    monkeypatch,
+    input_text,
+):
+    plugin = _plugin(tmp_path)
+    calls = []
+    rearmed = []
+    plugin._enabled = True
+    plugin._service = SimpleNamespace(
+        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
+    )
+    plugin._repository = SimpleNamespace(
+        get=lambda request_id: SimpleNamespace(
+            id=request_id,
+            status=RequestStatus.NEED_CONFIRMATION,
+        )
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_wechat_confirmation_targets",
+        lambda: frozenset({("user-a", "primary")}),
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "plugin_input_interaction_manager",
+        SimpleNamespace(create_or_replace=lambda **kwargs: rearmed.append(kwargs)),
+    )
+
+    plugin.handle_confirmation_input(
+        SimpleNamespace(
+            event_data={
+                "plugin_id": "XhsMovieAssistant",
+                "text": "plugin_input|session-21",
+                "input_text": input_text,
+                "userid": "user-a",
+                "channel": entrypoint.MessageChannel.Wechat,
+                "source": "primary",
+                "payload": {"request_id": 21},
+            }
+        )
+    )
+
+    assert calls == []
+    assert [call["payload"] for call in rearmed] == [{"request_id": 21}]
+
+
 def test_confirmation_input_arms_only_targets_receiving_a_prompt(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
     prompts = []

@@ -243,7 +243,7 @@ class XhsMovieAssistant(_PluginBase):
             return
         input_text = str(data.get("input_text") or "").strip()
         command = self._parse_confirmation_input_command(input_text)
-        if input_text.split(maxsplit=1)[0:1] == ["/xhs_confirm"]:
+        if input_text.startswith("/"):
             if command is not None:
                 request_id, clarification = command
                 self._confirm_request(
