@@ -153,7 +153,14 @@ def _notification_content(
         return _pause_notification_content(event.code)
     if event.kind == "REPLY_FAILURE":
         detail = _media_or_note_lines(request)
-        text = ["⚠️ 小红书回复失败", *detail, "处理结果已保留，请人工检查评论回复。"]
+        error_code = getattr(request, "reply_error_code", None)
+        reason = [f"原因：{error_code}"] if error_code else []
+        text = [
+            "⚠️ 小红书回复失败",
+            *detail,
+            *reason,
+            "处理结果已保留，请人工检查评论回复。",
+        ]
         return "小红书回复失败", "\n".join(text)
     return "小红书影视助手", _request_result_content(event.code, request)
 
@@ -183,6 +190,18 @@ def _request_result_content(code: str, request: StoredRequest | None) -> str:
     if code == "ALREADY_IN_LIBRARY":
         return "\n".join(["🎬 已存在", *media, "已经在媒体库中，无需重复添加。"])
     if code == "NEED_CONFIRMATION":
+        if request is not None and request.candidates:
+            return _candidate_confirmation_content(request)
+        if request is not None and request.match_reason == "NO_MATCH":
+            return "\n".join(
+                [
+                    "⚠️ MoviePilot 未找到匹配结果",
+                    *_media_lines(request),
+                    *_note_lines(request),
+                    "请发送明确的确认命令：",
+                    f"/xhs_confirm {request.id} 片名 年份 电影/剧集",
+                ]
+            )
         request_line = (
             f"请求 #{request.id}"
             if request is not None
@@ -193,9 +212,9 @@ def _request_result_content(code: str, request: StoredRequest | None) -> str:
                 "⚠️ 无法确定影视作品",
                 request_line,
                 *_note_lines(request),
-                "请直接回复明确的片名、年份和电影/剧集。",
+                "请发送明确的确认命令：",
                 (
-                    f"兜底命令：/xhs_confirm {request.id} 片名 年份 电影/剧集"
+                    f"/xhs_confirm {request.id} 片名 年份 电影/剧集"
                     if request is not None
                     else "也可在插件管理页人工确认。"
                 ),
@@ -216,6 +235,46 @@ def _request_result_content(code: str, request: StoredRequest | None) -> str:
     if code == "IGNORED":
         return "\n".join(["请求已忽略", *_note_lines(request)])
     return "⚠️ 处理结果异常\n请在插件详情中查看。"
+
+
+def _candidate_confirmation_content(request: StoredRequest) -> str:
+    identified = request.title or request.candidates[0].title
+    lines = [
+        f"🎬 已识别《{identified}》，请选择 MoviePilot 候选：",
+        f"请求 #{request.id}",
+    ]
+    lines.extend(
+        f"{index}. {_candidate_label(candidate)}"
+        for index, candidate in enumerate(request.candidates, start=1)
+    )
+    lines.extend(
+        f"选择 {index}：/xhs_pick {request.id} {index}"
+        for index in range(1, len(request.candidates) + 1)
+    )
+    return "\n".join(lines)
+
+
+def _candidate_label(candidate: object) -> str:
+    title = str(getattr(candidate, "title", "") or "未知标题")
+    year = getattr(candidate, "year", None)
+    media_type = {"movie": "Movie", "tv": "TV"}.get(
+        str(getattr(candidate, "media_type", "") or ""),
+        "Unknown",
+    )
+    source = {
+        "themoviedb": "TMDB",
+        "tmdb": "TMDB",
+        "douban": "豆瓣",
+        "bangumi": "Bangumi",
+        "anilist": "AniList",
+    }.get(str(getattr(candidate, "source", "") or ""), "MoviePilot")
+    name = f"{title}（{year}）" if year is not None else title
+    season = getattr(candidate, "season", None)
+    details = [media_type]
+    if season is not None:
+        details.append(f"第 {season} 季")
+    details.append(source)
+    return f"{name} · {' · '.join(details)}"
 
 
 def _media_or_note_lines(request: StoredRequest | None) -> list[str]:

@@ -28,7 +28,7 @@ from .repository import (
 )
 from .request_builder import TEXT_LIMITS, build_media_request, sanitize_text
 from .templates import ReplyTemplates
-from .xhs import XhsContractError, XhsPausedError
+from .xhs import ReplyOutcome, XhsContractError, XhsPausedError
 from .xhs_contracts import TransientMention
 
 
@@ -269,6 +269,43 @@ class AssistantService:
             )
         return self._process_resolution(request_id, None, resolution)
 
+    def confirm_candidate(
+        self,
+        request_id: int,
+        selection: int,
+    ) -> ProcessingResult:
+        """Submit one authorized, persisted MoviePilot candidate by number."""
+        self._flush_notifications()
+        if isinstance(selection, bool) or not isinstance(selection, int) or selection < 1:
+            raise ValueError("candidate selection must be a positive integer")
+        stored = self._require_authorized(request_id)
+        if stored.status is not RequestStatus.NEED_CONFIRMATION:
+            raise InvalidTransition("Request is not awaiting NEED_CONFIRMATION")
+        if stored.note is None:
+            raise InvalidTransition("Request has no durable note context")
+        if selection > len(stored.candidates):
+            raise ValueError("candidate selection is out of range")
+
+        selected = stored.candidates[selection - 1]
+        self._ensure_active(request_id)
+        decision = self.moviepilot.select(selected)
+        if decision.match is None or decision.media_info is None:
+            raise InvalidTransition("Selected candidate is no longer available")
+        resolution = Resolution(
+            status="resolved",
+            title=decision.match.title,
+            original_title=decision.match.original_title,
+            media_type=decision.match.media_type,
+            year=decision.match.year,
+            season=decision.match.season,
+            confidence=1.0,
+            reason="Authorized MoviePilot candidate selection",
+        )
+        self.repository.requeue(request_id, authenticated=True)
+        self._transition(request_id, RequestStatus.FETCHED, note=stored.note)
+        self._transition(request_id, RequestStatus.RESOLVING)
+        return self._submit_match(request_id, None, resolution, decision)
+
     def reply(self, request_id: int) -> StoredRequest:
         """Retry one pending public reply after refreshing its transient token."""
         self._flush_notifications()
@@ -284,6 +321,34 @@ class AssistantService:
             raise InvalidTransition("Reply category is disabled")
         self._reply_latest(request_id, result)
         return self._require_request(request_id)
+
+    def check_reply_target(self, request_id: int) -> ReplyOutcome:
+        """Inspect the latest reply controls without submitting a public reply."""
+        stored = self._require_authorized(request_id)
+        expected = TransientMention(
+            mention_id=stored.mention_id,
+            sender_user_id=stored.sender_user_id,
+            comment_id=stored.comment_id,
+            comment_text=stored.comment_text,
+            note_id=stored.note_id,
+            xsec_token="",
+            created_at=stored.created_at,
+        )
+        try:
+            self._ensure_active(request_id)
+            return self.xhs.check_reply_target(expected)
+        except XhsPausedError as error:
+            return ReplyOutcome(
+                success=False,
+                code=error.code,
+                message="Browser operation paused",
+            )
+        except Exception:
+            return ReplyOutcome(
+                success=False,
+                code="REPLY_CHECK_FAILED",
+                message="The reply target check failed",
+            )
 
     def resume(self) -> None:
         """Clear a persisted browser pause and its notification marker."""
@@ -376,8 +441,24 @@ class AssistantService:
             )
         if decision.match is None:
             return self._finish_resolution(
-                request_id, mention, RequestStatus.NEED_CONFIRMATION, resolution
+                request_id,
+                mention,
+                RequestStatus.NEED_CONFIRMATION,
+                resolution,
+                candidates=decision.candidates,
+                match_reason=decision.reason_code,
             )
+
+        return self._submit_match(request_id, mention, resolution, decision)
+
+    def _submit_match(
+        self,
+        request_id: int,
+        mention: TransientMention | None,
+        resolution: Resolution,
+        decision: Any,
+    ) -> ProcessingResult:
+        """Persist and submit one exact MoviePilot decision."""
 
         self._transition(
             request_id,
@@ -426,8 +507,17 @@ class AssistantService:
         mention: TransientMention | None,
         status: RequestStatus,
         resolution: Resolution,
+        *,
+        candidates: tuple[MediaMatch, ...] = (),
+        match_reason: str | None = None,
     ) -> ProcessingResult:
-        self._transition(request_id, status, resolution=resolution)
+        self._transition(
+            request_id,
+            status,
+            resolution=resolution,
+            candidates=candidates or None,
+            match_reason=match_reason,
+        )
         return self._complete(
             request_id,
             mention,
@@ -504,6 +594,7 @@ class AssistantService:
             self.repository.mark_reply(
                 request_id,
                 status=ReplyStatus.FAILED,
+                error_code=error.code,
                 business_notifications_enabled=self.notifications_enabled,
             )
             self._pause(error.code)
@@ -512,30 +603,38 @@ class AssistantService:
             self.repository.mark_reply(
                 request_id,
                 status=ReplyStatus.FAILED,
+                error_code="REPLY_FAILED",
                 business_notifications_enabled=self.notifications_enabled,
             )
             return
 
-        if (
-            outcome.success
-            and isinstance(outcome.reply_id, str)
-            and outcome.reply_id.strip()
-        ):
-            self.repository.mark_reply(request_id, outcome.reply_id.strip())
+        reply_id = (
+            outcome.reply_id.strip()
+            if isinstance(outcome.reply_id, str) and outcome.reply_id.strip()
+            else None
+        )
+        if outcome.success and (reply_id is not None or outcome.code == "UI_CONFIRMED"):
+            self.repository.mark_reply(request_id, reply_id)
             return
         self.repository.mark_reply(
             request_id,
             status=ReplyStatus.FAILED,
+            error_code=outcome.code or "SUBMIT_UNCONFIRMED",
             business_notifications_enabled=self.notifications_enabled,
         )
         if outcome.code in _REPLY_PAUSE_CODES:
             self._pause(outcome.code)
 
-    def _mark_reply_failed(self, request_id: int) -> None:
+    def _mark_reply_failed(
+        self,
+        request_id: int,
+        error_code: str = "REPLY_FAILED",
+    ) -> None:
         try:
             self.repository.mark_reply(
                 request_id,
                 status=ReplyStatus.FAILED,
+                error_code=error_code,
                 business_notifications_enabled=self.notifications_enabled,
             )
         except InvalidTransition:

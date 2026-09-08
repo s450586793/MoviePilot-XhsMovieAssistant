@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.2.3-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.2.4-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.2.3` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.2.4` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -30,7 +30,7 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 - 使用 SQLite 保存请求状态，支持崩溃恢复与幂等处理。
 - 通过 MoviePilot 已配置的消息渠道发送处理结果。
 - RedNote 直接在对应“评论和 @”通知卡片内回复，并在发送前复核账号与正文。
-- 无法确定时，可直接在企业微信回复明确片名；插件页人工确认继续作为备用入口。
+- 无法确定时，可在企业微信发送通知内的明确命令；插件页人工确认继续作为备用入口。
 - 可选使用固定模板回复原始小红书评论；不会让 AI 自由生成公开回复。
 - 提供 Vue 管理页，可导入 Cookie/Storage State，并查看状态、人工确认、重处理、补发回复、忽略和运行诊断。
 
@@ -145,14 +145,13 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 ```
 
 无法确定具体作品、同名年份歧义、类型冲突或季数不明确时，插件不会选择搜索结果
-中的第一项，而是进入 `NEED_CONFIRMATION`。插件会在企业微信通知中带上请求号，并
-临时接管已配置管理员的下一条普通文本；直接回复“片名、年份、电影/剧集”即可继续
-识别、匹配和订阅。若会话丢失或需要确认较早的请求，可发送
+中的第一项，而是进入 `NEED_CONFIRMATION`。企业微信通知会为每个候选给出完整的
+`/xhs_pick 请求号 编号` 命令；需要重新说明片名时，发送
 `/xhs_confirm 请求号 片名 年份 电影/剧集`。插件管理页的人工确认仍保留为备用入口。
 
-普通回复只对应每个企业微信管理员最近收到的一条待确认请求；同时存在多条待确认时，
-请使用带请求号的兜底命令，避免确认错请求。只有企业微信配置中的 `WECHAT_ADMINS`
-可以完成确认，其他用户的回复和命令会被忽略。
+插件不会创建企业微信普通文本输入会话，也不会接管你与 MoviePilot AI 的聊天。
+单独发送 `1`、片名或其他普通文本会继续由 MoviePilot 原有消息链处理，不会触发本插件。
+只有企业微信配置中的 `WECHAT_ADMINS` 可以执行上述命令，其他用户的命令会被忽略。
 
 ## 状态说明
 
@@ -160,9 +159,9 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 
 请求状态：`NEW` 为待处理，`FETCHED` 为已获取，`RESOLVING` 为 AI 正在识别；`NEED_CONFIRMATION` 表示信息不足或有歧义，需要人工确认；`NOT_MEDIA` 表示不是影视请求；`MATCHED` 表示已找到候选；`DRY_RUN_MATCHED` 表示 dry-run 匹配成功；`ALREADY_IN_LIBRARY` 和 `ALREADY_SUBSCRIBED` 表示无需再次订阅；`SUBSCRIBED` 表示已创建订阅；`FAILED` 表示本次失败；`IGNORED` 表示人工忽略。
 
-公开回复状态只在明确启用该可选高风险功能后出现：`PENDING` 表示等待发送；`SENT` 表示公开回复已成功发出；`FAILED` 表示发送失败。插件不会自动重试公开回复；`PENDING` 的支持结果可在管理页手动补发。补发前会重新读取通知并严格核对 mention、发起人、评论和笔记 ID，瞬时访问凭据不会写入 SQLite。`SENT` 或 `FAILED` 不会再次补发，避免重复留言。重新处理会开启一次新的处理尝试并重置回复状态，但不会重复创建已存在的订阅。
+公开回复状态只在明确启用该可选高风险功能后出现：`PENDING` 表示等待发送；`SENT` 表示公开回复已成功发出；`FAILED` 表示发送失败。RedNote 未返回回复 ID、但页面明确关闭回复编辑器时，也会记录为 `SENT`，不会伪造平台 ID。插件不会自动重试公开回复；`PENDING` 的支持结果可在管理页手动补发。补发前会重新读取通知并严格核对 mention、发起人、评论和笔记 ID，瞬时访问凭据不会写入 SQLite。`SENT` 或 `FAILED` 不会再次补发，避免重复留言。重新处理会开启一次新的处理尝试并重置回复状态，但不会重复创建已存在的订阅。
 
-日常优先在企业微信回复待确认通知。也可通过请求列表的“人工确认”“重新处理”或“忽略”操作处理 `NEED_CONFIRMATION`、`FAILED` 和未处理条目。人工确认页会载入缓存状态和最近的持久化请求；可先编辑影视标题、原始标题、电影/电视剧类型、年份和季数，再提交确认。标题为空或类型不属于电影/电视剧时，页面不会提交；提交后会刷新列表。该操作仍受服务端的授权、严格校验、确定性匹配、去重和 dry-run/真实订阅开关约束。恢复后再轮询。
+日常优先在企业微信发送待确认通知中列出的完整命令。也可通过请求列表的“人工确认”“重新处理”或“忽略”操作处理 `NEED_CONFIRMATION`、`FAILED` 和未处理条目。人工确认页会载入缓存状态和最近的持久化请求；可先编辑影视标题、原始标题、电影/电视剧类型、年份和季数，再提交确认。标题为空或类型不属于电影/电视剧时，页面不会提交；提交后会刷新列表。该操作仍受服务端的授权、严格校验、确定性匹配、去重和 dry-run/真实订阅开关约束。恢复后再轮询。
 
 ## 恢复
 
@@ -174,7 +173,7 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 | `INVALID_CREDENTIALS` | 确认粘贴的是完整 Cookie 请求头，或文件是合法的 Playwright `storageState.json`，并与插件选择的站点一致。 |
 | Chromium 安装失败或缺少系统库 | 按 MoviePilot 部署镜像/宿主机的 Chromium 依赖说明补齐库后，重新点击“安装 Chromium”。不要把浏览器依赖写入插件配置。 |
 | AI 测试失败或 AI 未启用 | 先在 MoviePilot 系统设置中配置并启用 AI，再使用插件的“测试 AI”确认；插件不保存模型凭据。 |
-| `NEED_CONFIRMATION` 或歧义结果 | 直接回复企业微信通知；会话丢失时使用 `/xhs_confirm`，插件页“人工确认”作为备用。不要仅凭相近标题开启真实订阅。 |
+| `NEED_CONFIRMATION` 或歧义结果 | 发送企业微信通知中的 `/xhs_pick` 或 `/xhs_confirm` 完整命令；插件页“人工确认”作为备用。不要仅凭相近标题开启真实订阅。 |
 | 浏览器显示 `ERROR` | 查看刚执行操作的错误码；修复 Chromium、登录或站点验证问题后点击“恢复轮询”。 |
 | 公开回复为 `PENDING` | 修复浏览器或登录问题后，在管理页点击“补发小红书回复”。 |
 | 公开回复为 `FAILED` | 为防止重复公开留言，该次回复已终止，需人工处理；必要时重新处理整个请求。 |
@@ -215,7 +214,7 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.2.3` 发布验证：Python `469 passed`，总覆盖率 `88.54%`；Vue
+当前 `v0.2.4` 发布验证：Python `477 passed`，总覆盖率 `87.76%`；Vue
 `26 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 

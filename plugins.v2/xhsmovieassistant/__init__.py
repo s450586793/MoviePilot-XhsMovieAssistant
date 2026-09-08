@@ -25,7 +25,7 @@ from app.schemas import MessageChannel, NotificationType
 from app.schemas.types import EventType
 
 from .browser import BrowserManager, OperationResult
-from .models import BrowserState, MediaRequest, NoteContext, RequestStatus, Resolution
+from .models import BrowserState, MediaRequest, NoteContext, Resolution
 from .moviepilot import MoviePilotGateway
 from .notifications import enqueue_pause_notification, flush_notification_outbox
 from .repository import RequestRepository
@@ -81,8 +81,18 @@ _OPERATION_MESSAGES = {
     "BROWSER_UNAVAILABLE": "Chromium is unavailable",
     "INVALID_CREDENTIALS": "Login credentials are invalid",
     "LOGIN_REQUIRED": "Login is required",
+    "INPUT_NOT_FOUND": "The notification reply input was not found",
+    "NOTIFICATION_MISMATCH": "The notification list did not match",
+    "NOTIFICATION_NOT_FOUND": "The source notification was not found",
     "RATE_LIMITED": "The site rate limited this action",
+    "REPLY_CHECK_FAILED": "The reply target check failed",
+    "REPLY_CHECK_UNAVAILABLE": "Reply target checks are unavailable for this site",
+    "REPLY_CONTROL_NOT_FOUND": "The notification reply control was not found",
+    "REPLY_READY": "Reply controls are ready",
     "SESSION_EXPIRED": "The browser session expired",
+    "SUBMIT_DISABLED": "The reply submit control is disabled",
+    "SUBMIT_NOT_FOUND": "The reply submit control was not found",
+    "TIMEOUT": "The browser action timed out",
     "TEMPORARY_FAILURE": "The browser action temporarily failed",
     "UPSTREAM_ERROR": "The browser action failed",
     "XHS_RISK_CONTROL": "Site verification is required",
@@ -132,7 +142,7 @@ class XhsMovieAssistant(_PluginBase):
     plugin_name = "小红书影视助手"
     plugin_desc = "从授权账号的小红书 @ 请求识别影视作品并交给 MoviePilot 订阅。"
     plugin_icon = "xhsmovieassistant.png"
-    plugin_version = "0.2.3"
+    plugin_version = "0.2.4"
     plugin_author = "s450586793"
     author_url = "https://github.com/s450586793/MoviePilot-XhsMovieAssistant"
     plugin_config_prefix = "xhsmovieassistant_"
@@ -208,7 +218,7 @@ class XhsMovieAssistant(_PluginBase):
 
     @staticmethod
     def get_command() -> list[dict[str, Any]]:
-        """Register a durable fallback for lost WeChat input sessions."""
+        """Register explicit WeChat commands without capturing ordinary messages."""
         return [
             {
                 "cmd": "/xhs_confirm",
@@ -216,57 +226,15 @@ class XhsMovieAssistant(_PluginBase):
                 "desc": "确认小红书影视请求",
                 "category": "订阅",
                 "data": {"action": "xhs_confirm"},
-            }
+            },
+            {
+                "cmd": "/xhs_pick",
+                "event": EventType.PluginAction,
+                "desc": "选择小红书影视候选",
+                "category": "订阅",
+                "data": {"action": "xhs_pick"},
+            },
         ]
-
-    @eventmanager.register(EventType.MessageAction)
-    def handle_confirmation_input(self, event: Event) -> None:
-        """Consume one MoviePilot-routed WeChat clarification."""
-        data = getattr(event, "event_data", None)
-        if not self._enabled or self._service is None or not isinstance(data, Mapping):
-            return
-        if data.get("plugin_id") != self.__class__.__name__:
-            return
-        if data.get("channel") is not MessageChannel.Wechat:
-            return
-        user_id = str(data.get("userid") or "").strip()
-        source = str(data.get("source") or "").strip()
-        if (user_id, source) not in self._wechat_confirmation_targets():
-            return
-        if not str(data.get("text") or "").startswith("plugin_input|"):
-            return
-        input_text = str(data.get("input_text") or "").strip()
-        command = self._parse_confirmation_input_command(input_text)
-        if input_text.startswith("/"):
-            if command is not None:
-                request_id, clarification = command
-                self._confirm_request(
-                    request_id,
-                    clarification,
-                    channel=MessageChannel.Wechat,
-                    source=source,
-                    user_id=user_id,
-                )
-            self._restore_consumed_confirmation_input(data, user_id, source)
-            return
-        payload = data.get("payload")
-        if not isinstance(payload, Mapping):
-            return
-        request_id = payload.get("request_id")
-        if (
-            isinstance(request_id, bool)
-            or not isinstance(request_id, int)
-            or request_id < 1
-            or not input_text
-        ):
-            return
-        self._confirm_request(
-            request_id,
-            input_text,
-            channel=MessageChannel.Wechat,
-            source=source,
-            user_id=user_id,
-        )
 
     @eventmanager.register(EventType.PluginAction)
     def handle_confirmation_command(self, event: Event) -> None:
@@ -274,13 +242,27 @@ class XhsMovieAssistant(_PluginBase):
         data = getattr(event, "event_data", None)
         if not self._enabled or self._service is None or not isinstance(data, Mapping):
             return
-        if data.get("action") != "xhs_confirm":
+        action = data.get("action")
+        if action not in {"xhs_confirm", "xhs_pick"}:
             return
         if data.get("channel") is not MessageChannel.Wechat:
             return
         user_id = str(data.get("user") or "").strip()
         source = str(data.get("source") or "").strip()
         if (user_id, source) not in self._wechat_confirmation_targets():
+            return
+        if action == "xhs_pick":
+            command = self._parse_candidate_arguments(data.get("arg_str"))
+            if command is None:
+                return
+            request_id, selection = command
+            self._confirm_candidate_request(
+                request_id,
+                selection,
+                channel=MessageChannel.Wechat,
+                source=source,
+                user_id=user_id,
+            )
             return
         command = self._parse_confirmation_arguments(data.get("arg_str"))
         if command is None:
@@ -338,6 +320,11 @@ class XhsMovieAssistant(_PluginBase):
             ("/requests/{request_id}/ignore", self.ignore, "忽略请求"),
             ("/requests/{request_id}/manual", self.manual_resolve, "人工确认影视作品"),
             ("/requests/{request_id}/reply", self.reply, "补发小红书回复"),
+            (
+                "/requests/{request_id}/reply-check",
+                self.reply_check,
+                "检查小红书回复目标",
+            ),
             ("/test/ai", self.test_ai, "测试 AI 识别"),
             ("/test/moviepilot", self.test_moviepilot, "测试 MoviePilot 匹配"),
             ("/test/notification", self.test_notification, "测试 MoviePilot 通知"),
@@ -773,6 +760,35 @@ class XhsMovieAssistant(_PluginBase):
         return self._service_action("reply", request_id)
 
     @_serialized_management
+    def reply_check(
+        self,
+        request_id: int,
+        request: Request = None,
+        apikey: str | None = None,
+    ) -> Any:
+        """Check one public reply target without entering text or submitting."""
+        if not self._authorized(request, apikey):
+            return self._unauthorized()
+        if self._service is None:
+            return self._failure("Plugin runtime is unavailable")
+        try:
+            outcome = self._service.check_reply_target(request_id)
+        except (TypeError, ValueError):
+            return self._failure("Request action is invalid")
+        except Exception:
+            return self._failure("Request action failed")
+        code = _public_operation_code(outcome.code)
+        return schemas.Response(
+            success=outcome.success,
+            message=(
+                "Reply target is ready"
+                if outcome.success
+                else "Reply target check failed"
+            ),
+            data={"code": code} if code else {},
+        )
+
+    @_serialized_management
     def test_ai(
         self,
         body: dict[str, Any] | None = None,
@@ -834,6 +850,7 @@ class XhsMovieAssistant(_PluginBase):
 
     def stop_service(self) -> None:
         """Bound shutdown and release active browser resources."""
+        self._clear_legacy_wechat_confirmation_inputs()
         with self._worker_lock:
             self._enabled = False
             self._stop_event.set()
@@ -925,7 +942,6 @@ class XhsMovieAssistant(_PluginBase):
                 self._template_values,
                 enabled_categories=self._reply_categories,
             ),
-            request_confirmation=self._arm_wechat_confirmation,
             is_cancelled=lambda: (
                 stop_event.is_set() or generation != self._generation
             ),
@@ -1111,27 +1127,6 @@ class XhsMovieAssistant(_PluginBase):
     def _notify(self, title: str, text: str) -> None:
         self.post_message(mtype=NotificationType.Plugin, title=title, text=text)
 
-    def _arm_wechat_confirmation(
-        self,
-        request_id: int,
-        title: str = "小红书影视助手",
-        text: str = "请直接回复明确的片名、年份和电影/剧集。",
-    ) -> None:
-        """Prompt each admin and only then arm that admin's next text."""
-        for user_id, source in sorted(self._wechat_confirmation_targets()):
-            try:
-                self.post_message(
-                    mtype=NotificationType.Plugin,
-                    title=title,
-                    text=text,
-                    channel=MessageChannel.Wechat,
-                    source=source,
-                    userid=user_id,
-                )
-            except Exception:
-                continue
-            self._create_wechat_confirmation_input(request_id, user_id, source)
-
     @staticmethod
     def _parse_confirmation_arguments(value: Any) -> tuple[int, str] | None:
         parts = str(value or "").strip().split(maxsplit=1)
@@ -1142,49 +1137,57 @@ class XhsMovieAssistant(_PluginBase):
             return None
         return request_id, parts[1].strip()
 
-    @classmethod
-    def _parse_confirmation_input_command(cls, value: str) -> tuple[int, str] | None:
-        parts = value.split(maxsplit=1)
-        if not parts or parts[0] != "/xhs_confirm":
+    @staticmethod
+    def _parse_candidate_number(value: Any) -> int | None:
+        text = str(value or "").strip()
+        if not text.isdigit():
             return None
-        return cls._parse_confirmation_arguments(parts[1] if len(parts) == 2 else "")
+        number = int(text)
+        return number if number > 0 else None
 
-    def _restore_consumed_confirmation_input(
-        self, data: Mapping[str, Any], user_id: str, source: str
-    ) -> None:
-        payload = data.get("payload")
-        if not isinstance(payload, Mapping):
-            return
-        request_id = payload.get("request_id")
-        if (
-            isinstance(request_id, bool)
-            or not isinstance(request_id, int)
-            or request_id < 1
-            or self._repository is None
-        ):
-            return
-        try:
-            stored = self._repository.get(request_id)
-        except Exception:
-            return
-        if stored is not None and stored.status is RequestStatus.NEED_CONFIRMATION:
-            self._create_wechat_confirmation_input(request_id, user_id, source)
+    @classmethod
+    def _parse_candidate_arguments(cls, value: Any) -> tuple[int, int] | None:
+        parts = str(value or "").strip().split()
+        if len(parts) != 2:
+            return None
+        request_id = cls._parse_candidate_number(parts[0])
+        selection = cls._parse_candidate_number(parts[1])
+        if request_id is None or selection is None:
+            return None
+        return request_id, selection
 
-    def _create_wechat_confirmation_input(
-        self, request_id: int, user_id: str, source: str
-    ) -> None:
+    def _confirm_candidate_request(
+        self,
+        request_id: int,
+        selection: int,
+        *,
+        channel: MessageChannel,
+        source: str,
+        user_id: str,
+    ) -> bool:
+        service = self._service
+        if service is None:
+            return False
         try:
-            plugin_input_interaction_manager.create_or_replace(
-                user_id=user_id,
-                plugin_id=self.__class__.__name__,
-                channel=MessageChannel.Wechat,
-                source=source,
-                username=None,
-                timeout_seconds=24 * 60 * 60,
-                payload={"request_id": request_id},
-            )
+            with self._activity_lock:
+                service.confirm_candidate(request_id, selection)
+            return True
         except Exception:
-            pass
+            try:
+                self.post_message(
+                    channel=channel,
+                    source=source,
+                    userid=user_id,
+                    title="小红书影视候选选择失败",
+                    text=(
+                        f"请求 #{request_id} 的候选 {selection} 无法提交。"
+                        f"请重新发送 /xhs_pick {request_id} 有效编号，"
+                        "或在插件页人工确认。"
+                    ),
+                )
+            except Exception:
+                pass
+            return False
 
     def _confirm_request(
         self,
@@ -1211,7 +1214,8 @@ class XhsMovieAssistant(_PluginBase):
                     title="小红书影视确认失败",
                     text=(
                         f"请求 #{request_id} 未能完成确认。"
-                        "请使用兜底命令重试，或在插件页人工确认。"
+                        f"请使用 /xhs_confirm {request_id} 片名 年份 电影/剧集重试，"
+                        "或在插件页人工确认。"
                     ),
                 )
             except Exception:
@@ -1241,6 +1245,22 @@ class XhsMovieAssistant(_PluginBase):
                 if (admin := value.strip())
             )
         return frozenset(targets)
+
+    def _clear_legacy_wechat_confirmation_inputs(self) -> None:
+        """Remove only stale input sessions created by this plugin."""
+        for user_id, source in self._wechat_confirmation_targets():
+            try:
+                pending = plugin_input_interaction_manager.get_by_user(
+                    user_id, MessageChannel.Wechat, source
+                )
+                if (
+                    pending is not None
+                    and getattr(pending, "plugin_id", None) == self.__class__.__name__
+                    and getattr(pending, "request_id", None)
+                ):
+                    plugin_input_interaction_manager.remove(pending.request_id)
+            except Exception:
+                continue
 
     def _request_rows(self) -> list[dict[str, Any]]:
         if self._repository is None:
@@ -1453,7 +1473,8 @@ def _match_text(item: Any) -> str:
 
 def _reply_text(item: Any) -> str:
     status = item.reply_status.value
-    return f"{status}:{item.reply_id}" if item.reply_id else status
+    detail = item.reply_id or getattr(item, "reply_error_code", None)
+    return f"{status}:{detail}" if detail else status
 
 
 def _extract_credential(

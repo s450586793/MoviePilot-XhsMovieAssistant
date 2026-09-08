@@ -92,9 +92,12 @@ class FakeXhs:
         self.mention_failures: list[Exception] = []
         self.note_failures: dict[str, Exception] = {}
         self.reply_outcomes: list[ReplyOutcome | Exception] = []
+        self.reply_probe_outcomes: list[ReplyOutcome | Exception] = []
+        self.reply_probe_mentions: list[TransientMention] = []
         self.fetch_mentions_calls = 0
         self.fetch_note_calls = 0
         self.reply_calls = 0
+        self.reply_probe_calls = 0
         self.repository: RequestRepository | None = None
         self.note_call_statuses: list[RequestStatus] = []
         self.reply_call_statuses: list[RequestStatus] = []
@@ -130,6 +133,20 @@ class FakeXhs:
         if not self.reply_outcomes:
             return ReplyOutcome(success=True, reply_id="reply-default")
         outcome = self.reply_outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def check_reply_target(self, item: TransientMention) -> ReplyOutcome:
+        self.reply_probe_calls += 1
+        self.reply_probe_mentions.append(item)
+        if not self.reply_probe_outcomes:
+            return ReplyOutcome(
+                success=True,
+                code="REPLY_READY",
+                message="Reply controls are ready",
+            )
+        outcome = self.reply_probe_outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -172,8 +189,10 @@ class FakeResolver:
 class FakeMoviePilot:
     def __init__(self) -> None:
         self.match_outcomes: list[MatchDecision | Exception] = []
+        self.select_outcomes: list[MatchDecision | Exception] = []
         self.submit_outcomes: list[SubscriptionOutcome | Exception] = []
         self.match_calls: list[Resolution] = []
+        self.select_calls: list[MediaMatch] = []
         self.submit_calls: list[tuple[MatchDecision, bool]] = []
         self.repository: RequestRepository | None = None
         self.match_call_statuses: list[RequestStatus] = []
@@ -188,6 +207,21 @@ class FakeMoviePilot:
         if self.repository is not None:
             self.match_call_statuses.append(self.repository.recent(1)[0].status)
         outcome = self.match_outcomes.pop(0) if self.match_outcomes else matched_decision()
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def select(self, candidate: MediaMatch) -> MatchDecision:
+        self.select_calls.append(candidate)
+        outcome = (
+            self.select_outcomes.pop(0)
+            if self.select_outcomes
+            else MatchDecision(
+                match=candidate,
+                media_info=object(),
+                reason_code="SELECTED",
+            )
+        )
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -647,6 +681,145 @@ def test_ambiguous_match_needs_confirmation_without_submit(tmp_path: Path) -> No
     assert moviepilot.submit_calls == []
 
 
+def test_resolved_media_without_moviepilot_results_has_specific_notification(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, _, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mentions = [mention()]
+    moviepilot.match_outcomes = [MatchDecision(reason_code="NO_MATCH")]
+
+    result = service.poll_once()[0]
+
+    request_id = repository.recent(1)[0].id
+    assert result.status is RequestStatus.NEED_CONFIRMATION
+    assert notifications == [
+        (
+            "小红书影视助手",
+            "⚠️ MoviePilot 未找到匹配结果\n"
+            "《星际穿越》\n"
+            "2014 · Movie\n"
+            "小红书：星际穿越\n"
+            "https://www.xiaohongshu.com/explore/note-m1\n"
+            "请发送明确的确认命令：\n"
+            f"/xhs_confirm {request_id} 片名 年份 电影/剧集",
+        )
+    ]
+
+
+def test_ambiguous_match_persists_distinct_candidates_and_notifies_numbers(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, _, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mentions = [mention()]
+    candidates = (
+        MediaMatch(
+            title="掉链子刑警",
+            original_title="おしい刑事",
+            media_type="tv",
+            year=2019,
+            source="themoviedb",
+            source_id="93230",
+            tmdb_id=93230,
+            score=0.8,
+        ),
+        MediaMatch(
+            title="果然是掉链子刑警",
+            original_title="やっぱりおしい刑事",
+            media_type="tv",
+            year=2021,
+            source="themoviedb",
+            source_id="120350",
+            tmdb_id=120350,
+            score=0.65,
+        ),
+    )
+    moviepilot.match_outcomes = [
+        MatchDecision(reason_code="AMBIGUOUS_RESULTS", candidates=candidates)
+    ]
+
+    result = service.poll_once()[0]
+
+    stored = repository.recent(1)[0]
+    assert result.status is RequestStatus.NEED_CONFIRMATION
+    assert stored.candidates == candidates
+    assert notifications == [
+        (
+            "小红书影视助手",
+            "🎬 已识别《星际穿越》，请选择 MoviePilot 候选：\n"
+            f"请求 #{stored.id}\n"
+            "1. 掉链子刑警（2019） · TV · TMDB\n"
+            "2. 果然是掉链子刑警（2021） · TV · TMDB\n"
+            f"选择 1：/xhs_pick {stored.id} 1\n"
+            f"选择 2：/xhs_pick {stored.id} 2",
+        )
+    ]
+
+
+def test_candidate_confirmation_submits_selected_identity_without_llm(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, moviepilot, _ = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+    )
+    xhs.mentions = [mention()]
+    first = matched_decision().match
+    assert first is not None
+    second = first.model_copy(
+        update={
+            "title": "星际穿越续集",
+            "year": 2026,
+            "source_id": "999999",
+            "tmdb_id": 999999,
+        }
+    )
+    moviepilot.match_outcomes = [
+        MatchDecision(reason_code="AMBIGUOUS_RESULTS", candidates=(first, second))
+    ]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+
+    result = service.confirm_candidate(request_id, 2)
+
+    assert result.status is RequestStatus.SUBSCRIBED
+    assert result.match == second
+    assert moviepilot.select_calls == [second]
+    assert len(resolver.confirmation_requests) == 0
+    assert repository.get(request_id).subscription_id == "42"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("selection", [0, 3])
+def test_candidate_confirmation_rejects_invalid_number_without_state_change(
+    tmp_path: Path,
+    selection: int,
+) -> None:
+    service, repository, xhs, _, moviepilot, _ = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mentions = [mention()]
+    candidate = matched_decision().match
+    assert candidate is not None
+    moviepilot.match_outcomes = [
+        MatchDecision(reason_code="AMBIGUOUS_RESULTS", candidates=(candidate,))
+    ]
+    service.poll_once()
+    request_id = repository.recent(1)[0].id
+
+    with pytest.raises(ValueError, match="candidate"):
+        service.confirm_candidate(request_id, selection)
+
+    assert repository.get(request_id).status is RequestStatus.NEED_CONFIRMATION  # type: ignore[union-attr]
+    assert moviepilot.select_calls == []
+    assert moviepilot.submit_calls == []
+
+
 def test_request_failure_is_sanitized_and_next_mention_continues(tmp_path: Path) -> None:
     service, repository, xhs, resolver, _, notifications = build_service(
         tmp_path / "assistant.db"
@@ -734,7 +907,10 @@ def test_reply_is_attempted_once_and_persisted_as_final(
     assert xhs.reply_call_statuses == [RequestStatus.SUBSCRIBED]
     assert stored.reply_status is (ReplyStatus.SENT if success else ReplyStatus.FAILED)
     assert stored.reply_id == ("reply-m1" if success else None)
+    assert stored.reply_error_code == (None if success else "TIMEOUT")
     assert len(notifications) == (1 if success else 2)
+    if not success:
+        assert "TIMEOUT" in notifications[-1][1]
 
 
 def test_reply_success_without_returned_id_is_not_persisted_as_sent(
@@ -754,6 +930,53 @@ def test_reply_success_without_returned_id_is_not_persisted_as_sent(
     stored = repository.recent(1)[0]
     assert stored.reply_status is ReplyStatus.FAILED
     assert stored.reply_id is None
+
+
+def test_ui_confirmed_reply_without_returned_id_is_persisted_as_sent(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, _, moviepilot, _ = build_service(
+        tmp_path / "assistant.db", enable_subscription=True, replies_enabled=True
+    )
+    xhs.mentions = [mention()]
+    xhs.reply_outcomes = [ReplyOutcome(success=True, code="UI_CONFIRMED")]
+    moviepilot.submit_outcomes = [
+        SubscriptionOutcome(status=RequestStatus.SUBSCRIBED, subscription_id="42")
+    ]
+
+    service.poll_once()
+
+    stored = repository.recent(1)[0]
+    assert stored.reply_status is ReplyStatus.SENT
+    assert stored.reply_id is None
+    assert stored.reply_error_code is None
+
+
+def test_reply_probe_reports_exact_stage_without_changing_delivery_state(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, _, _ = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [resolution(status="need_confirmation", confidence=0.2)]
+    service.poll_once()
+    stored = repository.recent(1)[0]
+    xhs.reply_probe_outcomes = [
+        ReplyOutcome(
+            success=False,
+            code="NOTIFICATION_MISMATCH",
+            message="The notification list did not match",
+        )
+    ]
+
+    outcome = service.check_reply_target(stored.id)
+
+    assert outcome.code == "NOTIFICATION_MISMATCH"
+    assert xhs.reply_probe_calls == 1
+    assert xhs.fetch_mentions_calls == 1
+    assert xhs.reply_probe_mentions[0].xsec_token == ""
+    assert repository.get(stored.id).reply_status is ReplyStatus.PENDING
 
 
 def test_reply_exception_is_not_retried(tmp_path: Path) -> None:
@@ -1064,8 +1287,8 @@ def test_need_confirmation_requests_wechat_input_for_the_durable_request(
             f"请求 #{request_id}\n"
             "小红书：星际穿越\n"
             "https://www.xiaohongshu.com/explore/note-m1\n"
-            "请直接回复明确的片名、年份和电影/剧集。\n"
-            f"兜底命令：/xhs_confirm {request_id} 片名 年份 电影/剧集",
+            "请发送明确的确认命令：\n"
+            f"/xhs_confirm {request_id} 片名 年份 电影/剧集",
         )
     ]
 

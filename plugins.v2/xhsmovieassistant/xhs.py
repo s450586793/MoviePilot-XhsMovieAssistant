@@ -62,6 +62,14 @@ class ReplyOutcome:
     reply_id: str | None = None
 
 
+@dataclass(frozen=True)
+class _ReplyControls:
+    """Located notification controls before any text is entered or submitted."""
+
+    input_locator: Any
+    submit: Any
+
+
 class XhsContractError(RuntimeError):
     """Raised when an expected Xiaohongshu browser contract is unavailable."""
 
@@ -208,6 +216,34 @@ class XhsGateway:
                 return _reply_failure("TIMEOUT", "The reply operation timed out")
             return _reply_failure("REPLY_FAILED", "The reply operation failed")
 
+    def check_reply_target(self, mention: TransientMention) -> ReplyOutcome:
+        """Check a RedNote reply target without entering text or submitting."""
+        try:
+            with self._manager.session() as page:
+                if not _is_rednote(self._manager.base_url):
+                    return _reply_failure(
+                        "REPLY_CHECK_UNAVAILABLE",
+                        "Reply target checks require the RedNote notification page",
+                    )
+                prepared = _notification_reply_controls(
+                    self._manager, page, mention
+                )
+                if isinstance(prepared, ReplyOutcome):
+                    return prepared
+                return ReplyOutcome(
+                    success=True,
+                    code="REPLY_READY",
+                    message="Reply controls are ready",
+                )
+        except XhsPausedError as error:
+            return _reply_failure(error.code, "Browser operation paused")
+        except Exception as error:
+            if _is_timeout(error):
+                return _reply_failure("TIMEOUT", "The reply target check timed out")
+            return _reply_failure(
+                "REPLY_CHECK_FAILED", "The reply target check failed"
+            )
+
 
 def _capture_mentions_payload(manager: Any, page: Any) -> Mapping[object, object]:
     captured: dict[str, object] = {}
@@ -255,6 +291,24 @@ def _reply_from_notification(
     mention: TransientMention,
     text: str,
 ) -> ReplyOutcome:
+    prepared = _notification_reply_controls(manager, page, mention)
+    if isinstance(prepared, ReplyOutcome):
+        return prepared
+    return _submit_reply_once(
+        manager,
+        page,
+        prepared.input_locator,
+        prepared.submit,
+        text,
+        ui_confirmation_locator=prepared.input_locator,
+    )
+
+
+def _notification_reply_controls(
+    manager: Any,
+    page: Any,
+    mention: TransientMention,
+) -> _ReplyControls | ReplyOutcome:
     payload = _capture_mentions_payload(manager, page)
     target = _indexed_mention(payload, mention.mention_id)
     if target is None:
@@ -299,7 +353,15 @@ def _reply_from_notification(
             "INPUT_NOT_FOUND", "The notification reply input was not found"
         )
     submit = card.locator(_NOTIFICATION_SUBMIT_SELECTOR).first
-    return _submit_reply_once(manager, page, input_locator, submit, text)
+    if submit.count() == 0:
+        return _reply_failure(
+            "SUBMIT_NOT_FOUND", "The reply submit control was not found"
+        )
+    if not submit.is_enabled(timeout=2_000):
+        return _reply_failure(
+            "SUBMIT_DISABLED", "The reply submit control is disabled"
+        )
+    return _ReplyControls(input_locator=input_locator, submit=submit)
 
 
 def _reply_from_note(
@@ -335,6 +397,8 @@ def _submit_reply_once(
     input_locator: Any,
     submit: Any,
     text: str,
+    *,
+    ui_confirmation_locator: Any = None,
 ) -> ReplyOutcome:
     try:
         input_locator.fill(text, timeout=2_000)
@@ -368,7 +432,12 @@ def _submit_reply_once(
             return _reply_failure(
                 "SUBMIT_FAILED", "The reply submission result is uncertain"
             )
-        return _confirm_reply_submission(manager, page, submit_responses)
+        return _confirm_reply_submission(
+            manager,
+            page,
+            submit_responses,
+            ui_confirmation_locator=ui_confirmation_locator,
+        )
     finally:
         page.remove_listener("response", on_submit_response)
 
@@ -696,16 +765,36 @@ def _confirm_reply_submission(
     manager: Any,
     page: Any,
     submit_responses: list[Any],
+    *,
+    ui_confirmation_locator: Any = None,
 ) -> ReplyOutcome:
     deadline = monotonic() + (_REPLY_CONFIRM_TIMEOUT_MS / 1_000)
     remaining_ms = _REPLY_CONFIRM_TIMEOUT_MS
+    ui_confirmed = False
+    unconfirmed_response: ReplyOutcome | None = None
     while True:
         if submit_responses:
-            return _reply_response_outcome(manager, page, submit_responses.pop(0))
+            outcome = _reply_response_outcome(manager, page, submit_responses.pop(0))
+            if outcome.success or outcome.code != "SUBMIT_UNCONFIRMED":
+                return outcome
+            unconfirmed_response = outcome
         risk = _page_outcome(manager, page, None)
         if risk is not None:
             return risk
+        if ui_confirmation_locator is not None:
+            try:
+                ui_confirmed = ui_confirmed or ui_confirmation_locator.count() == 0
+            except Exception:
+                pass
         if remaining_ms <= 0 or monotonic() >= deadline:
+            if ui_confirmed:
+                return ReplyOutcome(
+                    success=True,
+                    code="UI_CONFIRMED",
+                    message="Reply submitted",
+                )
+            if unconfirmed_response is not None:
+                return unconfirmed_response
             return _reply_failure(
                 "SUBMIT_UNCONFIRMED", "The reply submission could not be confirmed"
             )

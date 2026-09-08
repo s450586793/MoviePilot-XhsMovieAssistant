@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.testclient import TestClient
 from xhsmovieassistant.models import ProcessingResult, ReplyStatus, RequestStatus
+from xhsmovieassistant.xhs import ReplyOutcome
 
 
 def _plugin(tmp_path: Path) -> Any:
@@ -189,340 +190,55 @@ def test_get_service_is_interval_and_hidden_while_paused(tmp_path):
     assert plugin.get_service() == []
 
 
-def test_confirmation_request_arms_moviepilot_input_for_wechat_admins(
+def test_runtime_does_not_arm_global_wechat_input(
     tmp_path,
     monkeypatch,
 ):
     plugin = _plugin(tmp_path)
-    calls = []
-    configs = {
-        "primary": SimpleNamespace(
-            name="primary",
-            config={"WECHAT_ADMINS": "user-a, user-b"},
-        )
-    }
-    module = SimpleNamespace(get_configs=lambda: configs)
-    monkeypatch.setattr(
-        entrypoint,
-        "ModuleManager",
-        lambda: SimpleNamespace(get_running_module=lambda module_id: module),
-    )
-    monkeypatch.setattr(
-        entrypoint,
-        "plugin_input_interaction_manager",
-        SimpleNamespace(create_or_replace=lambda **kwargs: calls.append(kwargs)),
-    )
-
-    plugin._arm_wechat_confirmation(21)
-
-    assert [(call["user_id"], call["source"]) for call in calls] == [
-        ("user-a", "primary"),
-        ("user-b", "primary"),
-    ]
-    assert all(call["plugin_id"] == "XhsMovieAssistant" for call in calls)
-    assert all(call["payload"] == {"request_id": 21} for call in calls)
-    assert all(call["channel"] is entrypoint.MessageChannel.Wechat for call in calls)
-
-
-def test_wechat_input_is_routed_to_the_pending_confirmation(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
-    calls = []
-    plugin._enabled = True
-    plugin._service = SimpleNamespace(
-        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
-    )
-    monkeypatch.setattr(
-        plugin,
-        "_wechat_confirmation_targets",
-        lambda: frozenset({("user-a", "primary")}),
-    )
-    event = SimpleNamespace(
-        event_data={
-            "plugin_id": "XhsMovieAssistant",
-            "__mp_target_plugin_id": "XhsMovieAssistant",
-            "text": "plugin_input|session-1",
-            "input_text": "穿越时空的少女，2006，电影",
-            "userid": "user-a",
-            "channel": entrypoint.MessageChannel.Wechat,
-            "source": "primary",
-            "payload": {"request_id": 21},
-        }
-    )
-
-    plugin.handle_confirmation_input(event)
-
-    assert calls == [(21, "穿越时空的少女，2006，电影")]
-
-
-def test_active_plugin_input_routes_slash_command_to_explicit_request_and_rearms_session(
-    tmp_path,
-    monkeypatch,
-):
-    """Mirror MoviePilot's plugin-input-before-command dispatch order."""
-    plugin = _plugin(tmp_path)
-    calls = []
-    rearmed = []
-    plugin._enabled = True
-    plugin._service = SimpleNamespace(
-        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
-    )
-    plugin._repository = SimpleNamespace(
-        get=lambda request_id: SimpleNamespace(
-            id=request_id,
-            status=RequestStatus.NEED_CONFIRMATION,
-        )
-    )
-    monkeypatch.setattr(
-        plugin,
-        "_wechat_confirmation_targets",
-        lambda: frozenset({("user-a", "primary")}),
-    )
-    monkeypatch.setattr(
-        entrypoint,
-        "plugin_input_interaction_manager",
-        SimpleNamespace(create_or_replace=lambda **kwargs: rearmed.append(kwargs)),
-    )
-
-    # MoviePilot has already consumed the active session for request 21 before
-    # dispatching this MessageAction event to the plugin.
-    plugin.handle_confirmation_input(
-        SimpleNamespace(
-            event_data={
-                "plugin_id": "XhsMovieAssistant",
-                "text": "plugin_input|session-21",
-                "input_text": "/xhs_confirm 7 穿越时空的少女，2006，电影",
-                "userid": "user-a",
-                "channel": entrypoint.MessageChannel.Wechat,
-                "source": "primary",
-                "payload": {"request_id": 21},
-            }
-        )
-    )
-
-    assert calls == [(7, "穿越时空的少女，2006，电影")]
-    assert [call["payload"] for call in rearmed] == [{"request_id": 21}]
-
-
-def test_active_plugin_input_rearms_session_when_slash_command_is_invalid(
-    tmp_path,
-    monkeypatch,
-):
-    plugin = _plugin(tmp_path)
-    calls = []
-    rearmed = []
-    plugin._enabled = True
-    plugin._service = SimpleNamespace(
-        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
-    )
-    plugin._repository = SimpleNamespace(
-        get=lambda request_id: SimpleNamespace(
-            id=request_id,
-            status=RequestStatus.NEED_CONFIRMATION,
-        )
-    )
-    monkeypatch.setattr(
-        plugin,
-        "_wechat_confirmation_targets",
-        lambda: frozenset({("user-a", "primary")}),
-    )
-    monkeypatch.setattr(
-        entrypoint,
-        "plugin_input_interaction_manager",
-        SimpleNamespace(create_or_replace=lambda **kwargs: rearmed.append(kwargs)),
-    )
-
-    plugin.handle_confirmation_input(
-        SimpleNamespace(
-            event_data={
-                "plugin_id": "XhsMovieAssistant",
-                "text": "plugin_input|session-21",
-                "input_text": "/xhs_confirm not-an-id",
-                "userid": "user-a",
-                "channel": entrypoint.MessageChannel.Wechat,
-                "source": "primary",
-                "payload": {"request_id": 21},
-            }
-        )
-    )
-
-    assert calls == []
-    assert [call["payload"] for call in rearmed] == [{"request_id": 21}]
-
-
-@pytest.mark.parametrize("input_text", ["/xhs_confirm7 片名", "/version"])
-def test_active_plugin_input_rearms_session_without_confirming_other_commands(
-    tmp_path,
-    monkeypatch,
-    input_text,
-):
-    plugin = _plugin(tmp_path)
-    calls = []
-    rearmed = []
-    plugin._enabled = True
-    plugin._service = SimpleNamespace(
-        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
-    )
-    plugin._repository = SimpleNamespace(
-        get=lambda request_id: SimpleNamespace(
-            id=request_id,
-            status=RequestStatus.NEED_CONFIRMATION,
-        )
-    )
-    monkeypatch.setattr(
-        plugin,
-        "_wechat_confirmation_targets",
-        lambda: frozenset({("user-a", "primary")}),
-    )
-    monkeypatch.setattr(
-        entrypoint,
-        "plugin_input_interaction_manager",
-        SimpleNamespace(create_or_replace=lambda **kwargs: rearmed.append(kwargs)),
-    )
-
-    plugin.handle_confirmation_input(
-        SimpleNamespace(
-            event_data={
-                "plugin_id": "XhsMovieAssistant",
-                "text": "plugin_input|session-21",
-                "input_text": input_text,
-                "userid": "user-a",
-                "channel": entrypoint.MessageChannel.Wechat,
-                "source": "primary",
-                "payload": {"request_id": 21},
-            }
-        )
-    )
-
-    assert calls == []
-    assert [call["payload"] for call in rearmed] == [{"request_id": 21}]
-
-
-def test_confirmation_input_arms_only_targets_receiving_a_prompt(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
-    prompts = []
     interactions = []
-    monkeypatch.setattr(
-        plugin,
-        "_wechat_confirmation_targets",
-        lambda: frozenset({("user-a", "primary"), ("user-b", "backup")}),
-    )
-
-    def post_message(**kwargs):
-        prompts.append(kwargs)
-        if kwargs["source"] == "backup":
-            raise RuntimeError("notification unavailable")
-
-    monkeypatch.setattr(plugin, "post_message", post_message)
     monkeypatch.setattr(
         entrypoint,
         "plugin_input_interaction_manager",
         SimpleNamespace(create_or_replace=lambda **kwargs: interactions.append(kwargs)),
     )
 
-    plugin._arm_wechat_confirmation(21)
+    plugin.init_plugin({"enabled": True, "authorized_user_ids": "u1"})
 
-    assert [(prompt["userid"], prompt["source"]) for prompt in prompts] == [
-        ("user-a", "primary"),
-        ("user-b", "backup"),
-    ]
-    assert [(call["user_id"], call["source"]) for call in interactions] == [
-        ("user-a", "primary"),
-    ]
-
-
-def test_confirmation_input_does_not_arm_without_wechat_admin_targets(
-    tmp_path, monkeypatch
-):
-    plugin = _plugin(tmp_path)
-    prompts = []
-    interactions = []
-    monkeypatch.setattr(
-        plugin,
-        "_wechat_confirmation_targets",
-        lambda: frozenset(),
-    )
-    monkeypatch.setattr(plugin, "post_message", lambda **kwargs: prompts.append(kwargs))
-    monkeypatch.setattr(
-        entrypoint,
-        "plugin_input_interaction_manager",
-        SimpleNamespace(create_or_replace=lambda **kwargs: interactions.append(kwargs)),
-    )
-
-    plugin._arm_wechat_confirmation(21)
-
-    assert prompts == []
+    assert plugin._service.request_confirmation is None
     assert interactions == []
+    plugin.stop_service()
 
 
-def test_confirmation_input_rejects_an_unconfigured_wechat_sender(
-    tmp_path,
-    monkeypatch,
-):
+def test_stop_service_removes_only_legacy_xhs_wechat_input(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
-    calls = []
-    plugin._enabled = True
-    plugin._service = SimpleNamespace(
-        confirm_from_text=lambda request_id, text: calls.append((request_id, text))
-    )
+    removed = []
+    sessions = {
+        ("user-a", "primary"): SimpleNamespace(
+            plugin_id="XhsMovieAssistant", request_id="legacy-xhs"
+        ),
+        ("user-b", "primary"): SimpleNamespace(
+            plugin_id="OtherPlugin", request_id="other-plugin"
+        ),
+    }
     monkeypatch.setattr(
         plugin,
         "_wechat_confirmation_targets",
-        lambda: frozenset({("user-a", "primary")}),
-    )
-
-    plugin.handle_confirmation_input(
-        SimpleNamespace(
-            event_data={
-                "plugin_id": "XhsMovieAssistant",
-                "text": "plugin_input|session-1",
-                "input_text": "穿越时空的少女，2006，电影",
-                "userid": "other-user",
-                "channel": entrypoint.MessageChannel.Wechat,
-                "source": "primary",
-                "payload": {"request_id": 21},
-            }
-        )
-    )
-
-    assert calls == []
-
-
-def test_confirmation_input_reports_a_sanitized_failure_to_the_same_admin(
-    tmp_path,
-    monkeypatch,
-):
-    plugin = _plugin(tmp_path)
-    plugin._enabled = True
-    plugin._service = SimpleNamespace(
-        confirm_from_text=lambda request_id, text: (_ for _ in ()).throw(
-            RuntimeError("provider-secret")
-        )
+        lambda: frozenset({("user-a", "primary"), ("user-b", "primary")}),
     )
     monkeypatch.setattr(
-        plugin,
-        "_wechat_confirmation_targets",
-        lambda: frozenset({("user-a", "primary")}),
-    )
-
-    plugin.handle_confirmation_input(
+        entrypoint,
+        "plugin_input_interaction_manager",
         SimpleNamespace(
-            event_data={
-                "plugin_id": "XhsMovieAssistant",
-                "text": "plugin_input|session-1",
-                "input_text": "穿越时空的少女，2006，电影",
-                "userid": "user-a",
-                "channel": entrypoint.MessageChannel.Wechat,
-                "source": "primary",
-                "payload": {"request_id": 21},
-            }
-        )
+            get_by_user=lambda user_id, channel, source: sessions.get(
+                (user_id, source)
+            ),
+            remove=lambda request_id: removed.append(request_id),
+        ),
     )
 
-    assert plugin._posted_message["channel"] is entrypoint.MessageChannel.Wechat
-    assert plugin._posted_message["userid"] == "user-a"
-    assert plugin._posted_message["source"] == "primary"
-    assert "插件页人工确认" in plugin._posted_message["text"]
-    assert "provider-secret" not in repr(plugin._posted_message)
+    plugin.stop_service()
+
+    assert removed == ["legacy-xhs"]
 
 
 def test_confirmation_slash_command_is_available_when_input_session_is_lost(
@@ -557,6 +273,38 @@ def test_confirmation_slash_command_is_available_when_input_session_is_lost(
     assert calls == [(21, "穿越时空的少女，2006，电影")]
 
 
+def test_explicit_candidate_command_selects_the_requested_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    plugin = _plugin(tmp_path)
+    calls = []
+    plugin._enabled = True
+    plugin._service = SimpleNamespace(
+        confirm_candidate=lambda request_id, number: calls.append((request_id, number))
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_wechat_confirmation_targets",
+        lambda: frozenset({("user-a", "primary")}),
+    )
+
+    command = next(item for item in plugin.get_command() if item["cmd"] == "/xhs_pick")
+    plugin.handle_confirmation_command(
+        SimpleNamespace(
+            event_data={
+                **command["data"],
+                "arg_str": "516 2",
+                "user": "user-a",
+                "channel": entrypoint.MessageChannel.Wechat,
+                "source": "primary",
+            }
+        )
+    )
+
+    assert calls == [(516, 2)]
+
+
 def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
     plugin = _plugin(tmp_path)
     routes = plugin.get_api()
@@ -573,6 +321,7 @@ def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
         "/requests/{request_id}/ignore",
         "/requests/{request_id}/manual",
         "/requests/{request_id}/reply",
+        "/requests/{request_id}/reply-check",
         "/test/ai",
         "/test/moviepilot",
         "/test/notification",
@@ -581,6 +330,32 @@ def test_api_routes_are_post_only_and_explicitly_authenticated(tmp_path):
     assert state["methods"] == ["GET"]
     assert all(route["methods"] == ["POST"] for route in routes[1:])
     assert all(route["auth"] == "bear" for route in routes)
+
+
+def test_reply_check_api_returns_exact_stage_without_internal_message(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._service = SimpleNamespace(
+        check_reply_target=lambda request_id: ReplyOutcome(
+            success=False,
+            code="NOTIFICATION_MISMATCH",
+            message="internal browser detail",
+        )
+    )
+
+    client = _moviepilot_route_client(
+        plugin, "/requests/{request_id}/reply-check"
+    )
+    response = client.post(
+        "/requests/516/reply-check",
+        headers={"Authorization": "Bearer browser-jwt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": False,
+        "message": "Reply target check failed",
+        "data": {"code": "NOTIFICATION_MISMATCH"},
+    }
 
 
 def test_state_endpoint_returns_cached_status_and_durable_rows_without_runtime_work(

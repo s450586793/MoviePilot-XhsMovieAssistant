@@ -72,6 +72,54 @@ def test_same_title_different_year_needs_confirmation(gateway: MoviePilotGateway
 
     assert decision.match is None
     assert decision.reason_code == "AMBIGUOUS_RESULTS"
+    assert [(item.title, item.year) for item in decision.candidates] == [
+        ("同名", 1990),
+        ("同名", 2024),
+    ]
+
+
+def test_cross_source_records_for_the_same_work_are_one_match(
+    gateway: MoviePilotGateway,
+) -> None:
+    tmdb = media("掉链子刑警", 2019, "tv")
+    douban = media("掉链子刑警", 2019, "tv")
+    douban.source = "douban"
+    douban.tmdb_id = None
+    douban.douban_id = "30474691"
+    gateway.search_results.extend([douban, tmdb])
+
+    decision = gateway.match(
+        resolution(title="掉链子刑警", year=2019, media_type="tv")
+    )
+
+    assert decision.reason_code == "MATCHED"
+    assert decision.match is not None
+    assert decision.match.source == "themoviedb"
+    assert decision.match.source_id == "2019"
+
+
+def test_select_candidate_rehydrates_the_exact_stable_identity(
+    gateway: MoviePilotGateway,
+) -> None:
+    older = media("同名", 1990)
+    newer = media("同名", 2024)
+    gateway.search_results.extend([older, newer])
+    selected = MediaMatch(
+        title="同名",
+        media_type="movie",
+        year=2024,
+        source="themoviedb",
+        source_id="2024",
+        tmdb_id=2024,
+        score=0.65,
+    )
+
+    decision = gateway.select(selected)
+
+    assert decision.reason_code == "SELECTED"
+    assert decision.match is not None
+    assert decision.match.source_id == "2024"
+    assert decision.media_info is newer
 
 
 def test_exact_title_year_and_type_selects_one_result(gateway: MoviePilotGateway) -> None:

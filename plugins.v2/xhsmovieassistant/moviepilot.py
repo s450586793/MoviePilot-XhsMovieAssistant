@@ -25,6 +25,12 @@ _MEDIA_SOURCE_ID_FIELDS = {
     "bangumi": ("bangumi_id", "bangumiid"),
     "anilist": ("anilist_id", "anilistid"),
 }
+_MEDIA_SOURCE_PRIORITY = {
+    "themoviedb": 0,
+    "douban": 1,
+    "bangumi": 2,
+    "anilist": 3,
+}
 
 
 class MatchDecision(BaseModel):
@@ -34,6 +40,7 @@ class MatchDecision(BaseModel):
 
     match: MediaMatch | None = None
     media_info: Any | None = Field(default=None, exclude=True, repr=False)
+    candidates: tuple[MediaMatch, ...] = ()
     reason_code: str
 
 
@@ -147,7 +154,7 @@ class MoviePilotGateway:
         ):
             results.extend(self._search(media_chain, resolution.original_title))
 
-        candidates = self._candidates(results, resolution)
+        candidates = self._collapse_candidates(self._candidates(results, resolution))
         if not candidates:
             return MatchDecision(reason_code="NO_MATCH")
 
@@ -178,14 +185,54 @@ class MoviePilotGateway:
 
         if top.score < 0.8:
             return MatchDecision(
-                reason_code="AMBIGUOUS_RESULTS" if len(candidates) > 1 else "NO_MATCH"
+                candidates=tuple(candidate.match for candidate in candidates),
+                reason_code="AMBIGUOUS_RESULTS" if len(candidates) > 1 else "NO_MATCH",
             )
         if len(candidates) > 1 and top.score - candidates[1].score < 0.15:
-            return MatchDecision(reason_code="AMBIGUOUS_RESULTS")
+            return MatchDecision(
+                candidates=tuple(candidate.match for candidate in candidates),
+                reason_code="AMBIGUOUS_RESULTS",
+            )
         return MatchDecision(
             match=top.match,
             media_info=top.media_info,
             reason_code="MATCHED",
+        )
+
+    def select(self, selected: MediaMatch) -> MatchDecision:
+        """Rehydrate one persisted candidate by its exact MoviePilot identity."""
+        if not isinstance(selected, MediaMatch):
+            raise TypeError("selected must be a MediaMatch")
+        runtime = _load_moviepilot_runtime()
+        media_chain = runtime.MediaChain()
+        results = self._search(media_chain, selected.title)
+        if selected.original_title and (
+            _normalize(selected.original_title) != _normalize(selected.title)
+        ):
+            results.extend(self._search(media_chain, selected.original_title))
+        requested = Resolution(
+            status="resolved",
+            title=selected.title,
+            original_title=selected.original_title,
+            media_type=selected.media_type,
+            year=selected.year,
+            season=selected.season,
+            confidence=1.0,
+            reason="Authorized MoviePilot candidate selection",
+        )
+        identity = (_MEDIA_SOURCE_ALIASES.get(selected.source, selected.source), selected.source_id)
+        matches = [
+            candidate
+            for candidate in self._candidates(results, requested)
+            if (candidate.match.source, candidate.match.source_id) == identity
+        ]
+        if len(matches) != 1:
+            return MatchDecision(reason_code="CANDIDATE_NOT_FOUND")
+        match = matches[0]
+        return MatchDecision(
+            match=match.match,
+            media_info=match.media_info,
+            reason_code="SELECTED",
         )
 
     def submit(
@@ -294,3 +341,37 @@ class MoviePilotGateway:
                 )
             )
         return candidates
+
+    @staticmethod
+    def _collapse_candidates(candidates: list[_Candidate]) -> list[_Candidate]:
+        grouped: dict[tuple[str, int | None, str, int | None], list[_Candidate]] = {}
+        for candidate in candidates:
+            key = (
+                _normalize(candidate.match.title),
+                candidate.match.year,
+                candidate.match.media_type,
+                candidate.match.season,
+            )
+            grouped.setdefault(key, []).append(candidate)
+
+        collapsed = [
+            min(
+                group,
+                key=lambda candidate: (
+                    -candidate.score,
+                    _MEDIA_SOURCE_PRIORITY.get(candidate.match.source, 99),
+                    candidate.match.source_id,
+                ),
+            )
+            for group in grouped.values()
+        ]
+        collapsed.sort(
+            key=lambda candidate: (
+                -candidate.score,
+                candidate.match.title,
+                candidate.match.year or 0,
+                _MEDIA_SOURCE_PRIORITY.get(candidate.match.source, 99),
+                candidate.match.source_id,
+            )
+        )
+        return collapsed

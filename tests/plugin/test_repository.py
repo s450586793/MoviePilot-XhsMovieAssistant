@@ -141,6 +141,54 @@ def test_transition_persists_resolution_match_and_explicit_enums(tmp_path) -> No
         repo.transition(saved.request.id, "FAILED")  # type: ignore[arg-type]
 
 
+def test_confirmation_candidates_round_trip_and_are_cleared_on_requeue(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+    repo.transition(saved.request.id, RequestStatus.FETCHED)
+    repo.transition(saved.request.id, RequestStatus.RESOLVING)
+    candidates = (
+        MediaMatch(
+            title="掉链子刑警",
+            original_title="おしい刑事",
+            media_type="tv",
+            year=2019,
+            source="themoviedb",
+            source_id="93230",
+            tmdb_id=93230,
+            score=0.8,
+        ),
+        MediaMatch(
+            title="果然是掉链子刑警",
+            original_title="やっぱりおしい刑事",
+            media_type="tv",
+            year=2021,
+            source="themoviedb",
+            source_id="120350",
+            tmdb_id=120350,
+            score=0.65,
+        ),
+    )
+
+    pending = repo.transition(
+        saved.request.id,
+        RequestStatus.NEED_CONFIRMATION,
+        resolution=Resolution(
+            status="resolved",
+            title="掉链子刑警",
+            media_type="tv",
+            confidence=0.9,
+        ),
+        candidates=candidates,
+    )
+
+    assert pending.candidates == candidates
+    assert repo.get(saved.request.id).candidates == candidates  # type: ignore[union-attr]
+
+    requeued = repo.requeue(saved.request.id, authenticated=True)
+
+    assert requeued.candidates == ()
+
+
 def test_fetched_transition_atomically_round_trips_typed_note_snapshot(tmp_path) -> None:
     database_path = tmp_path / "app.db"
     repo = RequestRepository(database_path)
@@ -273,6 +321,17 @@ def test_mark_reply_is_idempotent_and_requires_an_existing_request(tmp_path) -> 
         repo.mark_reply(saved.request.id, "reply-2")
     with pytest.raises(RequestNotFound):
         repo.mark_reply(999, "reply-1")
+
+
+def test_mark_reply_accepts_ui_confirmed_delivery_without_platform_id(tmp_path) -> None:
+    repo = RequestRepository(tmp_path / "app.db")
+    saved = repo.save_mention(make_mention())
+
+    sent = repo.mark_reply(saved.request.id)
+
+    assert sent.reply_status is ReplyStatus.SENT
+    assert sent.reply_id is None
+    assert repo.mark_reply(saved.request.id) == sent
 
 
 def test_runtime_state_is_separate_and_contains_only_browser_health(tmp_path) -> None:
@@ -572,12 +631,16 @@ def test_mark_reply_persists_failure_and_keeps_sent_reply_terminal(tmp_path) -> 
     sent = repo.save_mention(make_mention("sent", "想看沙丘"))
 
     failed_reply = repo.mark_reply(
-        failed.request.id, status=ReplyStatus.FAILED
+        failed.request.id,
+        status=ReplyStatus.FAILED,
+        error_code="TIMEOUT",
     )
     sent_reply = repo.mark_reply(sent.request.id, "reply-1")
 
     assert failed_reply.reply_status is ReplyStatus.FAILED
     assert failed_reply.reply_id is None
+    assert failed_reply.reply_error_code == "TIMEOUT"
+    assert sent_reply.reply_error_code is None
     assert repo.mark_reply(sent.request.id, "reply-1") == sent_reply
     with pytest.raises(InvalidTransition):
         repo.mark_reply(sent.request.id, status=ReplyStatus.FAILED)
@@ -594,6 +657,7 @@ def test_mark_reply_rejects_pending_before_writing_reply_metadata(tmp_path) -> N
     assert unchanged is not None
     assert unchanged.reply_status is ReplyStatus.PENDING
     assert unchanged.reply_id is None
+    assert unchanged.reply_error_code is None
     assert unchanged.replied_at is None
 
 

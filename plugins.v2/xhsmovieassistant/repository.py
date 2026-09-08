@@ -75,6 +75,28 @@ SAFE_PERSISTED_CODES = frozenset(
         "XHS_RISK_CONTROL",
     }
 )
+SAFE_REPLY_ERROR_CODES = frozenset(
+    {
+        "AUTH_REQUIRED",
+        "INPUT_NOT_FOUND",
+        "LOGIN_REQUIRED",
+        "MENTIONS_FETCH_FAILED",
+        "NOTIFICATION_MISMATCH",
+        "NOTIFICATION_NOT_FOUND",
+        "RATE_LIMITED",
+        "REPLIES_DISABLED",
+        "REPLY_CONTROL_NOT_FOUND",
+        "REPLY_FAILED",
+        "SESSION_EXPIRED",
+        "SUBMIT_DISABLED",
+        "SUBMIT_FAILED",
+        "SUBMIT_NOT_FOUND",
+        "SUBMIT_UNCONFIRMED",
+        "TEMPORARY_FAILURE",
+        "TIMEOUT",
+        "XHS_RISK_CONTROL",
+    }
+)
 RECOVERABLE_STATUSES = {
     RequestStatus.FETCHED,
     RequestStatus.RESOLVING,
@@ -138,10 +160,13 @@ class StoredRequest:
     media_source_id: str | None
     tmdb_id: int | None
     score: float | None
+    candidates: tuple[MediaMatch, ...]
+    match_reason: str | None
     subscription_id: str | None
     error: str | None
     reply_status: ReplyStatus
     reply_id: str | None
+    reply_error_code: str | None
     replied_at: datetime | None
     attempt_count: int
 
@@ -278,6 +303,8 @@ class RequestRepository:
         note: NoteContext | None = None,
         resolution: Resolution | None = None,
         match: MediaMatch | None = None,
+        candidates: tuple[MediaMatch, ...] | None = None,
+        match_reason: str | None = None,
         subscription_id: str | None = None,
         business_notifications_enabled: bool = False,
         now: datetime | None = None,
@@ -291,6 +318,22 @@ class RequestRepository:
             raise TypeError("resolution must be a Resolution")
         if match is not None and not isinstance(match, MediaMatch):
             raise TypeError("match must be a MediaMatch")
+        if candidates is not None and (
+            not isinstance(candidates, tuple)
+            or not candidates
+            or len(candidates) > 20
+            or any(not isinstance(candidate, MediaMatch) for candidate in candidates)
+        ):
+            raise TypeError("candidates must be a non-empty MediaMatch tuple")
+        if candidates is not None and target is not RequestStatus.NEED_CONFIRMATION:
+            raise ValueError("candidates can only be saved with NEED_CONFIRMATION")
+        if match_reason is not None and match_reason not in {
+            "NO_MATCH",
+            "AMBIGUOUS_RESULTS",
+        }:
+            raise ValueError("unsupported match reason")
+        if match_reason is not None and target is not RequestStatus.NEED_CONFIRMATION:
+            raise ValueError("match reason can only be saved with NEED_CONFIRMATION")
         if not isinstance(business_notifications_enabled, bool):
             raise TypeError("business_notifications_enabled must be a bool")
         event_time = now or _utc_now()
@@ -313,6 +356,10 @@ class RequestRepository:
                 values.update(_resolution_values(resolution))
             if match is not None:
                 values.update(_match_values(match))
+            if candidates is not None:
+                values["candidate_snapshot"] = _serialize_candidates(candidates)
+            if match_reason is not None:
+                values["match_reason"] = match_reason
             if not _compare_and_update(connection, request_id, current, values):
                 raced = _require_row(connection, request_id)
                 raise InvalidTransition(
@@ -348,8 +395,11 @@ class RequestRepository:
                 {
                     "status": RequestStatus.NEW.value,
                     "error": None,
+                    "candidate_snapshot": None,
+                    "match_reason": None,
                     "reply_status": ReplyStatus.PENDING.value,
                     "reply_id": None,
+                    "reply_error_code": None,
                     "replied_at": None,
                     "attempt_count": row["attempt_count"] + 1,
                     "updated_at": _format_datetime(now or _utc_now()),
@@ -393,6 +443,7 @@ class RequestRepository:
         reply_id: str | None = None,
         *,
         status: ReplyStatus = ReplyStatus.SENT,
+        error_code: str | None = None,
         business_notifications_enabled: bool = False,
         now: datetime | None = None,
     ) -> StoredRequest:
@@ -401,12 +452,18 @@ class RequestRepository:
             raise TypeError("status must be a ReplyStatus")
         if status not in {ReplyStatus.SENT, ReplyStatus.FAILED}:
             raise ValueError("status must be ReplyStatus.SENT or ReplyStatus.FAILED")
-        if status is ReplyStatus.SENT and (
+        if status is ReplyStatus.SENT and reply_id is not None and (
             not isinstance(reply_id, str) or not reply_id.strip()
         ):
-            raise ValueError("reply_id must be a non-empty string when reply is sent")
+            raise ValueError("reply_id must be omitted or a non-empty string")
         if status is ReplyStatus.FAILED and reply_id is not None:
             raise ValueError("reply_id must be omitted when reply failed")
+        if error_code is not None and error_code not in SAFE_REPLY_ERROR_CODES:
+            raise ValueError("unsupported reply error code")
+        if status is ReplyStatus.SENT and error_code is not None:
+            raise ValueError("error_code must be omitted when reply is sent")
+        if status is ReplyStatus.FAILED and error_code is None:
+            error_code = "REPLY_FAILED"
         if not isinstance(business_notifications_enabled, bool):
             raise TypeError("business_notifications_enabled must be a bool")
         with self._connect() as connection:
@@ -423,6 +480,7 @@ class RequestRepository:
             values = {
                 "reply_status": status.value,
                 "reply_id": reply_id,
+                "reply_error_code": error_code,
                 "replied_at": timestamp,
                 "updated_at": timestamp,
             }
@@ -647,10 +705,13 @@ class RequestRepository:
                     media_source_id TEXT,
                     tmdb_id INTEGER,
                     score REAL,
+                    candidate_snapshot TEXT,
+                    match_reason TEXT,
                     subscription_id TEXT,
                     error TEXT,
                     reply_status TEXT NOT NULL DEFAULT 'PENDING',
                     reply_id TEXT,
+                    reply_error_code TEXT,
                     replied_at TEXT,
                     attempt_count INTEGER NOT NULL DEFAULT 0
                 )
@@ -731,10 +792,13 @@ _MIGRATION_COLUMNS = {
     "media_source_id": "TEXT",
     "tmdb_id": "INTEGER",
     "score": "REAL",
+    "candidate_snapshot": "TEXT",
+    "match_reason": "TEXT",
     "subscription_id": "TEXT",
     "error": "TEXT",
     "reply_status": "TEXT NOT NULL DEFAULT 'PENDING'",
     "reply_id": "TEXT",
+    "reply_error_code": "TEXT",
     "replied_at": "TEXT",
     "attempt_count": "INTEGER NOT NULL DEFAULT 0",
 }
@@ -969,6 +1033,14 @@ def _match_values(match: MediaMatch) -> dict[str, Any]:
     }
 
 
+def _serialize_candidates(candidates: tuple[MediaMatch, ...]) -> str:
+    return json.dumps(
+        [candidate.model_dump(mode="json") for candidate in candidates],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _request_from_row(row: sqlite3.Row) -> StoredRequest:
     return StoredRequest(
         id=row["id"], note_id=row["note_id"], note_url=row["note_url"],
@@ -982,8 +1054,11 @@ def _request_from_row(row: sqlite3.Row) -> StoredRequest:
         season=row["season"], confidence=row["confidence"],
         resolution_reason=row["resolution_reason"], media_source=row["media_source"],
         media_source_id=row["media_source_id"], tmdb_id=row["tmdb_id"], score=row["score"],
+        candidates=_candidates_from_row(row["candidate_snapshot"]),
+        match_reason=row["match_reason"],
         subscription_id=row["subscription_id"], error=row["error"],
         reply_status=ReplyStatus(row["reply_status"]), reply_id=row["reply_id"],
+        reply_error_code=row["reply_error_code"],
         replied_at=_parse_datetime(row["replied_at"], "replied_at", required=False),
         attempt_count=row["attempt_count"],
     )
@@ -996,6 +1071,18 @@ def _note_from_row(value: Any) -> NoteContext | None:
         return NoteContext.model_validate_json(value)
     except Exception:
         raise RuntimeError("Persisted request has an invalid note snapshot") from None
+
+
+def _candidates_from_row(value: Any) -> tuple[MediaMatch, ...]:
+    if value is None:
+        return ()
+    try:
+        payload = json.loads(value)
+        if not isinstance(payload, list) or not 1 <= len(payload) <= 20:
+            raise ValueError
+        return tuple(MediaMatch.model_validate(item) for item in payload)
+    except Exception:
+        raise RuntimeError("Persisted request has an invalid candidate snapshot") from None
 
 
 def _runtime_state_from_row(row: sqlite3.Row) -> RuntimeState:

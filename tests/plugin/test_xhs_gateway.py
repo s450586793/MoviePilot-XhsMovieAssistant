@@ -371,6 +371,7 @@ class FakePage:
         self.active_notification_index: int | None = None
         self.defer_notification_editor = False
         self.notification_editor_ready = True
+        self.notification_editor_closes_after_pumps: int | None = None
         self.notification_editor_waits = 0
         self.scroll_count = 0
         self.reply_clicks = 0
@@ -431,6 +432,12 @@ class FakePage:
                 callback(response)
         if self.submit_clicks:
             self.post_submit_pumps += 1
+            if (
+                self.notification_editor_closes_after_pumps is not None
+                and self.post_submit_pumps
+                >= self.notification_editor_closes_after_pumps
+            ):
+                self.notification_editor_ready = False
             if (
                 self.reply_success_after_pumps is not None
                 and self.post_submit_pumps >= self.reply_success_after_pumps
@@ -632,6 +639,22 @@ def test_rednote_reply_waits_for_async_inline_editor(
     assert outcome.success is True
     assert fake_page.notification_editor_waits == 1
     assert fake_page.submit_clicks == 1
+
+
+def test_rednote_reply_probe_checks_editor_without_filling_or_submitting(
+    fake_page: FakePage,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+
+    outcome = gateway.check_reply_target(mention)
+
+    assert outcome.success is True
+    assert outcome.code == "REPLY_READY"
+    assert fake_page.reply_clicks == 1
+    assert fake_page.notification_editor_waits == 1
+    assert fake_page.filled_text is None
+    assert fake_page.inserted_text is None
+    assert fake_page.submit_clicks == 0
 
 
 @pytest.mark.parametrize(
@@ -1183,7 +1206,7 @@ def test_reply_prefers_delayed_http_risk_over_synchronous_input_clear(
     status: int,
     code: str,
 ) -> None:
-    fake_page.reply_clears_on_click = True
+    fake_page.notification_editor_closes_after_pumps = 1
     fake_page.reply_success_after_pumps = None
     fake_page.delayed_responses = [
         (
@@ -1204,6 +1227,40 @@ def test_reply_prefers_delayed_http_risk_over_synchronous_input_clear(
     assert outcome.code == code
     assert fake_page.event_pumps >= pump
     assert fake_page.submit_clicks == 1
+
+
+def test_rednote_reply_accepts_closed_notification_editor_without_api_response(
+    fake_page: FakePage,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+    fake_page.submit_response_status = None
+    fake_page.reply_success_after_pumps = None
+    fake_page.notification_editor_closes_after_pumps = 1
+
+    outcome = gateway.reply_to_comment(mention, "收到，已安排订阅。")
+
+    assert outcome == ReplyOutcome(
+        success=True,
+        code="UI_CONFIRMED",
+        message="Reply submitted",
+    )
+    assert sum(fake_page.wait_timeouts) == 3_000
+    assert fake_page.submit_clicks == 1
+
+
+def test_rednote_reply_accepts_success_response_without_id_when_editor_closes(
+    fake_page: FakePage,
+) -> None:
+    gateway, mention = _rednote_reply_case(fake_page)
+    fake_page.submit_response_payload = {"success": True, "code": 0, "data": {}}
+    fake_page.reply_success_after_pumps = None
+    fake_page.notification_editor_closes_after_pumps = 1
+
+    outcome = gateway.reply_to_comment(mention, "收到，已安排订阅。")
+
+    assert outcome.success is True
+    assert outcome.code == "UI_CONFIRMED"
+    assert outcome.reply_id is None
 
 
 def test_reply_does_not_accept_input_clear_without_success_response(
