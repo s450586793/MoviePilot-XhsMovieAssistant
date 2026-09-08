@@ -18,29 +18,31 @@ const _hoisted_5 = {
   class: "xhs-movie-page__section",
   "aria-labelledby": "session-import"
 };
-const _hoisted_6 = { class: "xhs-movie-page__session-import" };
-const _hoisted_7 = {
+const _hoisted_6 = { class: "xhs-movie-page__section-title" };
+const _hoisted_7 = { class: "xhs-movie-page__credential-state" };
+const _hoisted_8 = { class: "xhs-movie-page__session-import" };
+const _hoisted_9 = {
   class: "xhs-movie-page__section",
   "aria-labelledby": "management-actions"
 };
-const _hoisted_8 = { class: "xhs-movie-page__tool-grid" };
-const _hoisted_9 = {
+const _hoisted_10 = { class: "xhs-movie-page__tool-grid" };
+const _hoisted_11 = {
   class: "xhs-movie-page__section",
   "aria-labelledby": "recent-requests"
 };
-const _hoisted_10 = { class: "xhs-movie-page__section-title" };
-const _hoisted_11 = {
+const _hoisted_12 = { class: "xhs-movie-page__section-title" };
+const _hoisted_13 = {
   key: 1,
   class: "xhs-movie-page__empty"
 };
-const _hoisted_12 = { class: "xhs-movie-request__header" };
-const _hoisted_13 = { class: "xhs-movie-request__id" };
-const _hoisted_14 = { class: "xhs-movie-request__summary" };
-const _hoisted_15 = {
+const _hoisted_14 = { class: "xhs-movie-request__header" };
+const _hoisted_15 = { class: "xhs-movie-request__id" };
+const _hoisted_16 = { class: "xhs-movie-request__summary" };
+const _hoisted_17 = {
   key: 0,
   class: "xhs-movie-request__editor"
 };
-const _hoisted_16 = {
+const _hoisted_18 = {
   key: 1,
   class: "xhs-movie-request__actions"
 };
@@ -70,6 +72,15 @@ const actionableStatuses = new Set(['NEW', 'FAILED', 'NEED_CONFIRMATION', 'DRY_R
 const replyableStatuses = new Set(['SUBSCRIBED', 'ALREADY_SUBSCRIBED', 'ALREADY_IN_LIBRARY', 'NEED_CONFIRMATION', 'FAILED']);
 const status = computed(() => snapshot.value.status || {});
 const requests = computed(() => Array.isArray(snapshot.value.requests) ? snapshot.value.requests : []);
+const credentialStatus = computed(() => {
+  const sessionState = status.value.session_state;
+  const loginState = status.value.login;
+  if (sessionState === 'MISSING') return { label: 'Cookie：未保存', color: 'default' }
+  if (sessionState === 'PRESENT' && loginState === 'LOGGED_IN') return { label: 'Cookie：有效', color: 'success' }
+  if (sessionState === 'PRESENT' && loginState === 'LOGGED_OUT') return { label: 'Cookie：已失效', color: 'error' }
+  if (sessionState === 'PRESENT') return { label: 'Cookie：待验证', color: 'warning' }
+  return { label: 'Cookie：状态未知', color: 'default' }
+});
 
 function unwrap(response) {
   const body = response && Object.prototype.hasOwnProperty.call(response, 'success')
@@ -267,9 +278,9 @@ onMounted(loadState);
 return (_ctx, _cache) => {
   const _component_VBtn = _resolveComponent("VBtn");
   const _component_VAlert = _resolveComponent("VAlert");
+  const _component_VChip = _resolveComponent("VChip");
   const _component_VTextField = _resolveComponent("VTextField");
   const _component_VProgressLinear = _resolveComponent("VProgressLinear");
-  const _component_VChip = _resolveComponent("VChip");
   const _component_VSelect = _resolveComponent("VSelect");
 
   return (_openBlock(), _createElementBlock("main", _hoisted_1, [
@@ -336,8 +347,21 @@ return (_ctx, _cache) => {
       ])
     ]),
     _createElementVNode("section", _hoisted_5, [
-      _cache[19] || (_cache[19] = _createStaticVNode("<div class=\"xhs-movie-page__section-title\" data-v-145584e7><h2 id=\"session-import\" data-v-145584e7>登录凭据</h2></div><aside class=\"xhs-movie-page__credential-help\" aria-labelledby=\"cookie-help-title\" data-v-145584e7><div class=\"xhs-movie-page__credential-help-title\" data-v-145584e7><h3 id=\"cookie-help-title\" data-v-145584e7>Cookie 从哪里获取</h3><a href=\"https://www.xiaohongshu.com/explore\" target=\"_blank\" rel=\"noopener noreferrer\" data-v-145584e7>打开小红书网页版</a></div><ol data-v-145584e7><li data-v-145584e7>使用电脑 Chrome 或 Edge 登录“小红书影视助手”小号。</li><li data-v-145584e7>按 F12 打开开发者工具，选择 Network（网络），然后刷新页面。</li><li data-v-145584e7>点开任意发往 xiaohongshu.com 的请求，在 Headers（标头）→ Request Headers（请求标头）中找到 Cookie。</li><li data-v-145584e7>只复制 <code data-v-145584e7>Cookie:</code> 后面的完整内容，粘贴到下方并点击“导入 Cookie”。</li></ol><p data-v-145584e7>插件设置选择 RedNote 时，请改在 <a href=\"https://www.rednote.com/explore\" target=\"_blank\" rel=\"noopener noreferrer\" data-v-145584e7>RedNote 网页版</a>执行相同步骤，凭据必须与所选站点一致。</p><p class=\"xhs-movie-page__credential-warning\" data-v-145584e7>Cookie 等同于账号登录凭据。不要使用 <code data-v-145584e7>document.cookie</code>，也不要把 Cookie 发给他人、上传 GitHub 或放进截图。</p></aside>", 2)),
       _createElementVNode("div", _hoisted_6, [
+        _cache[17] || (_cache[17] = _createElementVNode("h2", { id: "session-import" }, "登录凭据", -1)),
+        _createVNode(_component_VChip, {
+          size: "small",
+          color: credentialStatus.value.color,
+          variant: "tonal"
+        }, {
+          default: _withCtx(() => [
+            _createElementVNode("span", _hoisted_7, _toDisplayString(credentialStatus.value.label), 1)
+          ]),
+          _: 1
+        }, 8, ["color"])
+      ]),
+      _cache[20] || (_cache[20] = _createStaticVNode("<aside class=\"xhs-movie-page__credential-help\" aria-labelledby=\"cookie-help-title\" data-v-57250e7f><div class=\"xhs-movie-page__credential-help-title\" data-v-57250e7f><h3 id=\"cookie-help-title\" data-v-57250e7f>Cookie 从哪里获取</h3><a href=\"https://www.xiaohongshu.com/explore\" target=\"_blank\" rel=\"noopener noreferrer\" data-v-57250e7f>打开小红书网页版</a></div><ol data-v-57250e7f><li data-v-57250e7f>使用电脑 Chrome 或 Edge 登录“小红书影视助手”小号。</li><li data-v-57250e7f>按 F12 打开开发者工具，选择 Network（网络），然后刷新页面。</li><li data-v-57250e7f>点开任意发往 xiaohongshu.com 的请求，在 Headers（标头）→ Request Headers（请求标头）中找到 Cookie。</li><li data-v-57250e7f>只复制 <code data-v-57250e7f>Cookie:</code> 后面的完整内容，粘贴到下方并点击“保存并验证 Cookie”。</li></ol><p data-v-57250e7f>插件设置选择 RedNote 时，请改在 <a href=\"https://www.rednote.com/explore\" target=\"_blank\" rel=\"noopener noreferrer\" data-v-57250e7f>RedNote 网页版</a>执行相同步骤，凭据必须与所选站点一致。</p><p class=\"xhs-movie-page__credential-warning\" data-v-57250e7f>Cookie 等同于账号登录凭据。不要使用 <code data-v-57250e7f>document.cookie</code>，也不要把 Cookie 发给他人、上传 GitHub 或放进截图。</p></aside>", 1)),
+      _createElementVNode("div", _hoisted_8, [
         _createVNode(_component_VTextField, {
           modelValue: cookieDraft.value,
           "onUpdate:modelValue": _cache[1] || (_cache[1] = $event => ((cookieDraft).value = $event)),
@@ -353,8 +377,8 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/session/import',
           onClick: importCookie
         }, {
-          default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
-            _createTextVNode("导入 Cookie", -1)
+          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+            _createTextVNode("保存并验证 Cookie", -1)
           ]))]),
           _: 1
         }, 8, ["loading"]),
@@ -373,25 +397,25 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/session/import',
           onClick: selectStorageState
         }, {
-          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
-            _createTextVNode("导入 Storage State", -1)
+          default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+            _createTextVNode("保存并验证 Storage State", -1)
           ]))]),
           _: 1
         }, 8, ["loading"])
       ])
     ]),
-    _createElementVNode("section", _hoisted_7, [
-      _cache[28] || (_cache[28] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
+    _createElementVNode("section", _hoisted_9, [
+      _cache[29] || (_cache[29] = _createElementVNode("div", { class: "xhs-movie-page__section-title" }, [
         _createElementVNode("h2", { id: "management-actions" }, "管理与诊断")
       ], -1)),
-      _createElementVNode("div", _hoisted_8, [
+      _createElementVNode("div", _hoisted_10, [
         _createVNode(_component_VBtn, {
           "prepend-icon": "mdi-download",
           variant: "outlined",
           loading: actionKey.value === 'plugin/XhsMovieAssistant/chromium/install',
           onClick: _cache[2] || (_cache[2] = $event => (runAction('plugin/XhsMovieAssistant/chromium/install', 'Chromium 安装')))
         }, {
-          default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+          default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
             _createTextVNode("安装 Chromium", -1)
           ]))]),
           _: 1
@@ -402,7 +426,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/session/validate',
           onClick: _cache[3] || (_cache[3] = $event => (runAction('plugin/XhsMovieAssistant/session/validate', '登录验证')))
         }, {
-          default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
+          default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
             _createTextVNode("验证登录", -1)
           ]))]),
           _: 1
@@ -413,7 +437,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/session/clear',
           onClick: _cache[4] || (_cache[4] = $event => (runAction('plugin/XhsMovieAssistant/session/clear', '清除登录')))
         }, {
-          default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
+          default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
             _createTextVNode("清除登录", -1)
           ]))]),
           _: 1
@@ -424,7 +448,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/poll',
           onClick: _cache[5] || (_cache[5] = $event => (runAction('plugin/XhsMovieAssistant/poll', '立即轮询')))
         }, {
-          default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+          default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
             _createTextVNode("立即轮询", -1)
           ]))]),
           _: 1
@@ -435,7 +459,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/resume',
           onClick: _cache[6] || (_cache[6] = $event => (runAction('plugin/XhsMovieAssistant/resume', '恢复轮询')))
         }, {
-          default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+          default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
             _createTextVNode("恢复轮询", -1)
           ]))]),
           _: 1
@@ -446,7 +470,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/ai',
           onClick: _cache[7] || (_cache[7] = $event => (runAction('plugin/XhsMovieAssistant/test/ai', 'AI 测试', { title: '星际穿越' })))
         }, {
-          default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
+          default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
             _createTextVNode("测试 AI", -1)
           ]))]),
           _: 1
@@ -457,7 +481,7 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/moviepilot',
           onClick: _cache[8] || (_cache[8] = $event => (runAction('plugin/XhsMovieAssistant/test/moviepilot', 'MoviePilot 测试', { title: '星际穿越', media_type: 'movie' })))
         }, {
-          default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
+          default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
             _createTextVNode("测试 MoviePilot", -1)
           ]))]),
           _: 1
@@ -468,16 +492,16 @@ return (_ctx, _cache) => {
           loading: actionKey.value === 'plugin/XhsMovieAssistant/test/notification',
           onClick: _cache[9] || (_cache[9] = $event => (runAction('plugin/XhsMovieAssistant/test/notification', '通知测试')))
         }, {
-          default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+          default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
             _createTextVNode("测试通知", -1)
           ]))]),
           _: 1
         }, 8, ["loading"])
       ])
     ]),
-    _createElementVNode("section", _hoisted_9, [
-      _createElementVNode("div", _hoisted_10, [
-        _cache[29] || (_cache[29] = _createElementVNode("h2", { id: "recent-requests" }, "最近请求", -1)),
+    _createElementVNode("section", _hoisted_11, [
+      _createElementVNode("div", _hoisted_12, [
+        _cache[30] || (_cache[30] = _createElementVNode("h2", { id: "recent-requests" }, "最近请求", -1)),
         _createElementVNode("span", null, _toDisplayString(requests.value.length) + " 项", 1)
       ]),
       (loading.value)
@@ -489,16 +513,16 @@ return (_ctx, _cache) => {
           }))
         : _createCommentVNode("", true),
       (!loading.value && !requests.value.length)
-        ? (_openBlock(), _createElementBlock("p", _hoisted_11, "没有可显示的持久化请求。"))
+        ? (_openBlock(), _createElementBlock("p", _hoisted_13, "没有可显示的持久化请求。"))
         : _createCommentVNode("", true),
       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(requests.value, (row) => {
         return (_openBlock(), _createElementBlock("article", {
           key: row.id,
           class: "xhs-movie-request"
         }, [
-          _createElementVNode("header", _hoisted_12, [
+          _createElementVNode("header", _hoisted_14, [
             _createElementVNode("div", null, [
-              _createElementVNode("span", _hoisted_13, "#" + _toDisplayString(row.id), 1),
+              _createElementVNode("span", _hoisted_15, "#" + _toDisplayString(row.id), 1),
               _createElementVNode("h3", null, _toDisplayString(row.title), 1)
             ]),
             _createVNode(_component_VChip, {
@@ -512,26 +536,26 @@ return (_ctx, _cache) => {
               _: 2
             }, 1032, ["color"])
           ]),
-          _createElementVNode("dl", _hoisted_14, [
+          _createElementVNode("dl", _hoisted_16, [
             _createElementVNode("div", null, [
-              _cache[30] || (_cache[30] = _createElementVNode("dt", null, "匹配", -1)),
+              _cache[31] || (_cache[31] = _createElementVNode("dt", null, "匹配", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.match), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[31] || (_cache[31] = _createElementVNode("dt", null, "回复", -1)),
+              _cache[32] || (_cache[32] = _createElementVNode("dt", null, "回复", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.reply), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[32] || (_cache[32] = _createElementVNode("dt", null, "错误", -1)),
+              _cache[33] || (_cache[33] = _createElementVNode("dt", null, "错误", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.error), 1)
             ]),
             _createElementVNode("div", null, [
-              _cache[33] || (_cache[33] = _createElementVNode("dt", null, "更新", -1)),
+              _cache[34] || (_cache[34] = _createElementVNode("dt", null, "更新", -1)),
               _createElementVNode("dd", null, _toDisplayString(row.updated_at), 1)
             ])
           ]),
           (isActionable(row))
-            ? (_openBlock(), _createElementBlock("div", _hoisted_15, [
+            ? (_openBlock(), _createElementBlock("div", _hoisted_17, [
                 _createVNode(_component_VTextField, {
                   modelValue: draftFor(row).title,
                   "onUpdate:modelValue": $event => ((draftFor(row).title) = $event),
@@ -568,7 +592,7 @@ return (_ctx, _cache) => {
               ]))
             : _createCommentVNode("", true),
           (isActionable(row) || canReply(row))
-            ? (_openBlock(), _createElementBlock("footer", _hoisted_16, [
+            ? (_openBlock(), _createElementBlock("footer", _hoisted_18, [
                 (isActionable(row))
                   ? (_openBlock(), _createBlock(_component_VBtn, {
                       key: 0,
@@ -599,7 +623,7 @@ return (_ctx, _cache) => {
                       loading: actionKey.value === `plugin/XhsMovieAssistant/requests/${row.id}/manual`,
                       onClick: $event => (submitManual(row))
                     }, {
-                      default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
+                      default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
                         _createTextVNode("人工确认", -1)
                       ]))]),
                       _: 1
@@ -626,6 +650,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-145584e7"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-57250e7f"]]);
 
 export { Page as default };

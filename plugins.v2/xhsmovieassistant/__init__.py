@@ -132,7 +132,7 @@ class XhsMovieAssistant(_PluginBase):
     plugin_name = "小红书影视助手"
     plugin_desc = "从授权账号的小红书 @ 请求识别影视作品并交给 MoviePilot 订阅。"
     plugin_icon = "xhsmovieassistant.png"
-    plugin_version = "0.2.1"
+    plugin_version = "0.2.2"
     plugin_author = "s450586793"
     author_url = "https://github.com/s450586793/MoviePilot-XhsMovieAssistant"
     plugin_config_prefix = "xhsmovieassistant_"

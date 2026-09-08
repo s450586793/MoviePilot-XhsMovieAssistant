@@ -17,6 +17,15 @@ const actionableStatuses = new Set(['NEW', 'FAILED', 'NEED_CONFIRMATION', 'DRY_R
 const replyableStatuses = new Set(['SUBSCRIBED', 'ALREADY_SUBSCRIBED', 'ALREADY_IN_LIBRARY', 'NEED_CONFIRMATION', 'FAILED'])
 const status = computed(() => snapshot.value.status || {})
 const requests = computed(() => Array.isArray(snapshot.value.requests) ? snapshot.value.requests : [])
+const credentialStatus = computed(() => {
+  const sessionState = status.value.session_state
+  const loginState = status.value.login
+  if (sessionState === 'MISSING') return { label: 'Cookie：未保存', color: 'default' }
+  if (sessionState === 'PRESENT' && loginState === 'LOGGED_IN') return { label: 'Cookie：有效', color: 'success' }
+  if (sessionState === 'PRESENT' && loginState === 'LOGGED_OUT') return { label: 'Cookie：已失效', color: 'error' }
+  if (sessionState === 'PRESENT') return { label: 'Cookie：待验证', color: 'warning' }
+  return { label: 'Cookie：状态未知', color: 'default' }
+})
 
 function unwrap(response) {
   const body = response && Object.prototype.hasOwnProperty.call(response, 'success')
@@ -245,6 +254,7 @@ onMounted(loadState)
     <section class="xhs-movie-page__section" aria-labelledby="session-import">
       <div class="xhs-movie-page__section-title">
         <h2 id="session-import">登录凭据</h2>
+        <VChip size="small" :color="credentialStatus.color" variant="tonal"><span class="xhs-movie-page__credential-state">{{ credentialStatus.label }}</span></VChip>
       </div>
       <aside class="xhs-movie-page__credential-help" aria-labelledby="cookie-help-title">
         <div class="xhs-movie-page__credential-help-title">
@@ -255,16 +265,16 @@ onMounted(loadState)
           <li>使用电脑 Chrome 或 Edge 登录“小红书影视助手”小号。</li>
           <li>按 F12 打开开发者工具，选择 Network（网络），然后刷新页面。</li>
           <li>点开任意发往 xiaohongshu.com 的请求，在 Headers（标头）→ Request Headers（请求标头）中找到 Cookie。</li>
-          <li>只复制 <code>Cookie:</code> 后面的完整内容，粘贴到下方并点击“导入 Cookie”。</li>
+          <li>只复制 <code>Cookie:</code> 后面的完整内容，粘贴到下方并点击“保存并验证 Cookie”。</li>
         </ol>
         <p>插件设置选择 RedNote 时，请改在 <a href="https://www.rednote.com/explore" target="_blank" rel="noopener noreferrer">RedNote 网页版</a>执行相同步骤，凭据必须与所选站点一致。</p>
         <p class="xhs-movie-page__credential-warning">Cookie 等同于账号登录凭据。不要使用 <code>document.cookie</code>，也不要把 Cookie 发给他人、上传 GitHub 或放进截图。</p>
       </aside>
       <div class="xhs-movie-page__session-import">
         <VTextField v-model="cookieDraft" label="小红书 Cookie" type="password" autocomplete="new-password" density="comfortable" @keyup.enter="importCookie" />
-        <VBtn prepend-icon="mdi-cookie-check-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/import'" @click="importCookie">导入 Cookie</VBtn>
+        <VBtn prepend-icon="mdi-cookie-check-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/import'" @click="importCookie">保存并验证 Cookie</VBtn>
         <input ref="storageFileInput" type="file" accept="application/json,.json" aria-label="Storage State 文件" hidden @change="importStorageState">
-        <VBtn prepend-icon="mdi-file-upload-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/import'" @click="selectStorageState">导入 Storage State</VBtn>
+        <VBtn prepend-icon="mdi-file-upload-outline" variant="outlined" :loading="actionKey === 'plugin/XhsMovieAssistant/session/import'" @click="selectStorageState">保存并验证 Storage State</VBtn>
       </div>
     </section>
 

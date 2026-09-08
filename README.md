@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.2.1-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.2.2-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.2.1` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.2.2` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -59,9 +59,12 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 3. 按 `F12` 打开开发者工具，切换到 `Network`（网络），然后刷新页面。
 4. 点开任意发往当前站点的请求，在 `Headers`（标头）→ `Request Headers`（请求标头）
    中找到 `Cookie`。
-5. 复制 `Cookie:` 后面的完整值，粘贴到插件管理页并点击“导入 Cookie”。只粘贴值
+5. 复制 `Cookie:` 后面的完整值，粘贴到插件管理页并点击“保存并验证 Cookie”。只粘贴值
    即可；如果连同 `Cookie:` 一起复制，插件也能识别。
 6. 导入后插件会立即验证；页面应显示登录凭据 `PRESENT`、登录状态 `LOGGED_IN`。
+
+插件登录区的 Cookie 状态标签会显示“未保存”“待验证”“有效”或“已失效”。只有显示
+“Cookie：有效”时才表示站点已完成真实登录验证。
 
 不要在 Console（控制台）运行 `document.cookie` 获取凭据，它通常拿不到 HttpOnly
 Cookie，会造成登录验证失败。Cookie 等同于账号登录凭据，不要发给他人，也不要上传到
@@ -211,8 +214,8 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.2.1` 发布验证：Python `463 passed`，总覆盖率 `88.72%`；Vue
-`22 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
+当前 `v0.2.2` 发布验证：Python `463 passed`，总覆盖率 `88.72%`；Vue
+`26 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 
 ## 实现证据

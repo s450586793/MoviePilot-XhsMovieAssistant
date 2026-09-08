@@ -103,6 +103,17 @@ describe('Page manual resolution', () => {
     expect(wrapper.findAll('button').some(button => button.text() === '安装 Chromium')).toBe(true)
   })
 
+  it.each([
+    [{ session_state: 'MISSING', login: 'LOGGED_OUT' }, 'Cookie：未保存'],
+    [{ session_state: 'PRESENT', login: 'UNKNOWN' }, 'Cookie：待验证'],
+    [{ session_state: 'PRESENT', login: 'LOGGED_IN' }, 'Cookie：有效'],
+    [{ session_state: 'PRESENT', login: 'LOGGED_OUT' }, 'Cookie：已失效'],
+  ])('renders the credential state as %s', async (status, expected) => {
+    const { wrapper } = await mountPage({ status })
+
+    expect(wrapper.get('.xhs-movie-page__credential-state').text()).toBe(expected)
+  })
+
   it('shows complete Cookie acquisition and credential safety guidance', async () => {
     const { wrapper } = await mountPage()
     const help = wrapper.get('[aria-labelledby="cookie-help-title"]')
@@ -116,13 +127,13 @@ describe('Page manual resolution', () => {
     expect(help.get('a[href="https://www.rednote.com/explore"]').attributes('rel')).toBe('noopener noreferrer')
   })
 
-  it('imports a masked Cookie and clears the field immediately', async () => {
+  it('saves and validates a masked Cookie, then clears the field immediately', async () => {
     const { api, wrapper } = await mountPage()
     const input = wrapper.get('input[aria-label="小红书 Cookie"]')
     expect(input.attributes('type')).toBe('password')
     await input.setValue('a1=secret-a1; web_session=secret-session')
 
-    const button = wrapper.findAll('button').find(item => item.text() === '导入 Cookie')
+    const button = wrapper.findAll('button').find(item => item.text() === '保存并验证 Cookie')
     await button.trigger('click')
     await flushPromises()
 
