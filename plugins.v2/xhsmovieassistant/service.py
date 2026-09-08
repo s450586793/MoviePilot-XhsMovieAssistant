@@ -420,6 +420,26 @@ class AssistantService:
             return self._finish_resolution(
                 request_id, mention, RequestStatus.NOT_MEDIA, resolution
             )
+        if resolution.status == "need_confirmation" and resolution.candidates:
+            try:
+                self._ensure_active(request_id)
+                candidates = self._match_resolution_candidates(resolution)
+            except _ServiceCancelled:
+                raise
+            except Exception:
+                return self._complete(
+                    request_id,
+                    mention,
+                    self._fail(request_id, "UPSTREAM_ERROR"),
+                )
+            return self._finish_resolution(
+                request_id,
+                mention,
+                RequestStatus.NEED_CONFIRMATION,
+                resolution,
+                candidates=candidates or (),
+                match_reason="MULTIPLE_MEDIA" if candidates else "NO_MATCH",
+            )
         if (
             resolution.status == "need_confirmation"
             or resolution.confidence < self.confidence_threshold
@@ -450,6 +470,47 @@ class AssistantService:
             )
 
         return self._submit_match(request_id, mention, resolution, decision)
+
+    def _match_resolution_candidates(
+        self,
+        resolution: Resolution,
+    ) -> tuple[MediaMatch, ...]:
+        matches: list[MediaMatch] = []
+        seen: set[tuple[str, str, int | None]] = set()
+        for candidate in resolution.candidates:
+            self._ensure_active()
+            requested = Resolution(
+                status="resolved",
+                title=candidate.title,
+                original_title=candidate.original_title,
+                media_type=candidate.media_type,
+                year=candidate.year,
+                season=candidate.season,
+                confidence=1.0,
+                reason="Candidate from a multi-media XHS note",
+            )
+            decision = self.moviepilot.match(requested)
+            if (
+                decision.match is None
+                and not decision.candidates
+                and requested.year is not None
+            ):
+                self._ensure_active()
+                decision = self.moviepilot.match(
+                    requested.model_copy(update={"year": None})
+                )
+            available = (
+                (decision.match,) if decision.match is not None else decision.candidates
+            )
+            for match in available:
+                identity = (match.source.casefold(), match.source_id, match.season)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                matches.append(match)
+                if len(matches) == 20:
+                    return tuple(matches)
+        return tuple(matches)
 
     def _submit_match(
         self,

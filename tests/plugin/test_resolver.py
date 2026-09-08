@@ -112,6 +112,10 @@ def test_prompt_requires_media_only_json_outcomes(
     assert "season" in prompt.system
     assert "need_confirmation" in prompt.system
     assert "not_media" in prompt.system
+    assert "candidates" in prompt.system
+    assert "多部" in prompt.system
+    assert "纠正笔记中的明显错别字" in prompt.system
+    assert "year 和 season 没有值时使用 null" in prompt.system
     assert "JSON" in prompt.system
 
 
@@ -222,6 +226,91 @@ def test_parse_resolution_preserves_low_information_outcomes(
     payload: dict[str, object], expected_status: str
 ) -> None:
     assert parse_resolution(json.dumps(payload, ensure_ascii=False)).status == expected_status
+
+
+def test_parse_resolution_accepts_provider_null_names_for_confirmation() -> None:
+    payload = {
+        "status": "need_confirmation",
+        "title": None,
+        "original_title": None,
+        "media_type": "unknown",
+        "year": None,
+        "season": None,
+        "confidence": 0,
+        "reason": "笔记同时介绍了多部作品",
+    }
+
+    result = parse_resolution(json.dumps(payload, ensure_ascii=False))
+
+    assert result.status == "need_confirmation"
+    assert result.title == ""
+    assert result.original_title == ""
+
+
+def test_parse_resolution_preserves_distinct_titles_from_a_multi_media_note() -> None:
+    payload = {
+        "status": "need_confirmation",
+        "title": None,
+        "original_title": None,
+        "media_type": "unknown",
+        "year": None,
+        "season": None,
+        "confidence": 0,
+        "reason": "笔记同时推荐了四部作品",
+        "candidates": [
+            {
+                "title": "凪的新生活",
+                "original_title": None,
+                "media_type": "tv",
+                "year": 2019,
+                "season": None,
+            },
+            {
+                "title": "我的事说来话长",
+                "original_title": "俺の話は長い",
+                "media_type": "tv",
+                "year": 2019,
+                "season": None,
+            },
+        ],
+    }
+
+    result = parse_resolution(json.dumps(payload, ensure_ascii=False))
+
+    assert [candidate.title for candidate in result.candidates] == [
+        "凪的新生活",
+        "我的事说来话长",
+    ]
+    assert result.candidates[0].original_title == ""
+
+
+def test_parse_resolution_normalizes_provider_zero_unknown_year_and_season() -> None:
+    payload = {
+        "status": "need_confirmation",
+        "title": "",
+        "original_title": "",
+        "media_type": "unknown",
+        "year": 0,
+        "season": 0,
+        "confidence": 0.9,
+        "reason": "笔记同时推荐了多部作品",
+        "candidates": [
+            {
+                "title": "平屋慢生活",
+                "original_title": "",
+                "media_type": "tv",
+                "year": 0,
+                "season": 0,
+            }
+        ],
+    }
+
+    result = parse_resolution(json.dumps(payload, ensure_ascii=False))
+
+    assert result.year is None
+    assert result.season is None
+    assert result.candidates[0].year is None
+    assert result.candidates[0].season is None
 
 
 def test_resolver_uses_sync_factory_messages_timeout_and_helper_extraction(

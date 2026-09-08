@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.2.4-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.2.5-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.2.4` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.2.5` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -25,6 +25,8 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 - 只允许配置的稳定用户 ID 触发，昵称不会作为授权依据。
 - 获取触发评论、笔记标题、正文、作者和少量相关评论。
 - 复用 MoviePilot 当前 AI 配置，不单独保存模型地址、Key 或 Token。
+- 一篇笔记明确推荐多部作品时，在企业微信列出 MoviePilot 候选供编号选择，不自动
+  订阅第一部。
 - 按标题、原名、类型、年份和季数进行确定性匹配；结果歧义时要求人工确认。
 - 查询媒体库和已有订阅，避免重复创建。
 - 使用 SQLite 保存请求状态，支持崩溃恢复与幂等处理。
@@ -144,9 +146,10 @@ dry-run 或创建订阅
 MoviePilot 消息通知 / 可选固定模板评论回复
 ```
 
-无法确定具体作品、同名年份歧义、类型冲突或季数不明确时，插件不会选择搜索结果
-中的第一项，而是进入 `NEED_CONFIRMATION`。企业微信通知会为每个候选给出完整的
-`/xhs_pick 请求号 编号` 命令；需要重新说明片名时，发送
+无法确定具体作品、同一笔记推荐多部作品、同名年份歧义、类型冲突或季数不明确时，
+插件不会选择搜索结果中的第一项，而是进入 `NEED_CONFIRMATION`。多作品笔记只会列出
+明确推荐的作品，不会加入正文中明确排除或仅顺带提及的片名。企业微信通知会为每个
+候选给出完整的 `/xhs_pick 请求号 编号` 命令；需要重新说明片名时，发送
 `/xhs_confirm 请求号 片名 年份 电影/剧集`。插件管理页的人工确认仍保留为备用入口。
 
 插件不会创建企业微信普通文本输入会话，也不会接管你与 MoviePilot AI 的聊天。
@@ -214,7 +217,7 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.2.4` 发布验证：Python `477 passed`，总覆盖率 `87.76%`；Vue
+当前 `v0.2.5` 发布验证：Python `482 passed`，总覆盖率 `87.77%`；Vue
 `26 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 

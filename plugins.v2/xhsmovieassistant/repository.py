@@ -330,6 +330,7 @@ class RequestRepository:
         if match_reason is not None and match_reason not in {
             "NO_MATCH",
             "AMBIGUOUS_RESULTS",
+            "MULTIPLE_MEDIA",
         }:
             raise ValueError("unsupported match reason")
         if match_reason is not None and target is not RequestStatus.NEED_CONFIRMATION:

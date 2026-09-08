@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import pytest
 
+from xhsmovieassistant import models as domain_models
 from xhsmovieassistant.models import (
     BrowserState,
     MediaMatch,
@@ -653,6 +654,137 @@ def test_resolution_short_circuits_never_call_moviepilot(
     assert service.poll_once()[0].status is expected_status
     assert repository.recent(1)[0].status is expected_status
     assert moviepilot.calls == 0
+
+
+def test_multiple_resolved_titles_become_numbered_moviepilot_candidates(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, moviepilot, notifications = build_service(
+        tmp_path / "assistant.db",
+        enable_subscription=True,
+    )
+    xhs.mentions = [mention()]
+    suggestions = (
+        domain_models.ResolutionCandidate(
+            title="凪的新生活", media_type="tv", year=2019
+        ),
+        domain_models.ResolutionCandidate(
+            title="我的事说来话长", media_type="tv", year=2019
+        ),
+        domain_models.ResolutionCandidate(
+            title="平屋慢生活", media_type="tv", year=2025
+        ),
+        domain_models.ResolutionCandidate(
+            title="吃饱睡好等幸福", media_type="tv", year=2025
+        ),
+    )
+    resolver.outcomes = [
+        Resolution(
+            status="need_confirmation",
+            media_type="unknown",
+            confidence=0,
+            reason="笔记同时推荐了四部作品",
+            candidates=suggestions,
+        )
+    ]
+    matches = tuple(
+        MediaMatch(
+            title=suggestion.title,
+            original_title=suggestion.original_title,
+            media_type=suggestion.media_type,
+            year=suggestion.year,
+            source="themoviedb",
+            source_id=str(91000 + index),
+            tmdb_id=91000 + index,
+            score=1.0,
+        )
+        for index, suggestion in enumerate(suggestions, start=1)
+    )
+    moviepilot.match_outcomes = [
+        MatchDecision(
+            match=match,
+            media_info=object(),
+            reason_code="MATCHED",
+        )
+        for match in matches
+    ]
+
+    result = service.poll_once()[0]
+
+    stored = repository.recent(1)[0]
+    assert result.status is RequestStatus.NEED_CONFIRMATION
+    assert [item.title for item in moviepilot.match_calls] == [
+        "凪的新生活",
+        "我的事说来话长",
+        "平屋慢生活",
+        "吃饱睡好等幸福",
+    ]
+    assert stored.candidates == matches
+    assert stored.match_reason == "MULTIPLE_MEDIA"
+    assert moviepilot.submit_calls == []
+    assert notifications == [
+        (
+            "小红书影视助手",
+            "🎬 识别到多部作品，请选择 MoviePilot 候选：\n"
+            f"请求 #{stored.id}\n"
+            "1. 凪的新生活（2019） · TV · TMDB\n"
+            "2. 我的事说来话长（2019） · TV · TMDB\n"
+            "3. 平屋慢生活（2025） · TV · TMDB\n"
+            "4. 吃饱睡好等幸福（2025） · TV · TMDB\n"
+            f"选择 1：/xhs_pick {stored.id} 1\n"
+            f"选择 2：/xhs_pick {stored.id} 2\n"
+            f"选择 3：/xhs_pick {stored.id} 3\n"
+            f"选择 4：/xhs_pick {stored.id} 4",
+        )
+    ]
+
+
+def test_multi_media_candidate_retries_without_an_unreliable_ai_year(
+    tmp_path: Path,
+) -> None:
+    service, repository, xhs, resolver, moviepilot, _ = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mentions = [mention()]
+    resolver.outcomes = [
+        Resolution(
+            status="need_confirmation",
+            media_type="unknown",
+            confidence=0.8,
+            reason="笔记同时推荐了多部作品",
+            candidates=(
+                domain_models.ResolutionCandidate(
+                    title="平屋慢生活",
+                    original_title="平屋日和",
+                    media_type="tv",
+                    year=2024,
+                ),
+            ),
+        )
+    ]
+    corrected = MediaMatch(
+        title="平屋慢生活",
+        media_type="tv",
+        year=2025,
+        source="themoviedb",
+        source_id="297207",
+        tmdb_id=297207,
+        score=0.8,
+    )
+    moviepilot.match_outcomes = [
+        MatchDecision(reason_code="NO_MATCH"),
+        MatchDecision(
+            match=corrected,
+            media_info=object(),
+            reason_code="MATCHED",
+        ),
+    ]
+
+    result = service.poll_once()[0]
+
+    assert result.status is RequestStatus.NEED_CONFIRMATION
+    assert [call.year for call in moviepilot.match_calls] == [2024, None]
+    assert repository.recent(1)[0].candidates == (corrected,)
 
 
 def test_confidence_equal_to_threshold_is_eligible_for_matching(tmp_path: Path) -> None:

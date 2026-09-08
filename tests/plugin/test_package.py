@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.2.5": "修复 AI 待确认结果兼容性，并支持多作品笔记通过企业微信编号选择后订阅。",
         "v0.2.4": "企业微信确认改为显式命令，不再接管普通 AI 对话；修复 RedNote 回复成功却误报失败。",
         "v0.2.3": "RedNote 改为在评论和 @ 通知卡片内精确回复，避免帖子评论分页导致回复失败。",
         "v0.2.2": "登录页新增 Cookie 有效状态标签，并将凭据操作改为保存并验证。",

@@ -239,10 +239,12 @@ def _request_result_content(code: str, request: StoredRequest | None) -> str:
 
 def _candidate_confirmation_content(request: StoredRequest) -> str:
     identified = request.title or request.candidates[0].title
-    lines = [
-        f"🎬 已识别《{identified}》，请选择 MoviePilot 候选：",
-        f"请求 #{request.id}",
-    ]
+    heading = (
+        "🎬 识别到多部作品，请选择 MoviePilot 候选："
+        if request.match_reason == "MULTIPLE_MEDIA"
+        else f"🎬 已识别《{identified}》，请选择 MoviePilot 候选："
+    )
+    lines = [heading, f"请求 #{request.id}"]
     lines.extend(
         f"{index}. {_candidate_label(candidate)}"
         for index, candidate in enumerate(request.candidates, start=1)

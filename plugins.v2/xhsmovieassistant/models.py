@@ -71,6 +71,21 @@ class MediaRequest(_DomainModel):
     note: NoteContext
 
 
+class ResolutionCandidate(_DomainModel):
+    """One concrete work named in an otherwise ambiguous media request."""
+
+    title: str = Field(min_length=1)
+    original_title: str = ""
+    media_type: Literal["movie", "tv"]
+    year: int | None = Field(default=None, ge=1874, le=2100)
+    season: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_media_season(self) -> "ResolutionCandidate":
+        _validate_media_season(self.media_type, self.season)
+        return self
+
+
 class Resolution(_DomainModel):
     """Structured media-identification output."""
 
@@ -82,6 +97,7 @@ class Resolution(_DomainModel):
     season: int | None = Field(default=None, ge=1)
     confidence: float = Field(ge=0, le=1)
     reason: str = ""
+    candidates: tuple[ResolutionCandidate, ...] = Field(default=(), max_length=10)
 
     @model_validator(mode="after")
     def validate_resolved_media(self) -> "Resolution":
@@ -89,6 +105,8 @@ class Resolution(_DomainModel):
             not self.title or self.media_type not in {"movie", "tv"}
         ):
             raise ValueError("resolved status requires a title and movie or tv media type")
+        if self.status != "need_confirmation" and self.candidates:
+            raise ValueError("candidates require need_confirmation status")
         _validate_media_season(self.media_type, self.season)
         return self
 
