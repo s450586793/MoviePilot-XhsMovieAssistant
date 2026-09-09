@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.2.7": "修正登录验证中的临时页面异常分类，避免误报 Chromium 不可用。",
         "v0.2.6": "过滤 MoviePilot 低相关候选，并区分临时抓取故障与 Chromium 不可用。",
         "v0.2.5": "修复 AI 待确认结果兼容性，并支持多作品笔记通过企业微信编号选择后订阅。",
         "v0.2.4": "企业微信确认改为显式命令，不再接管普通 AI 对话；修复 RedNote 回复成功却误报失败。",

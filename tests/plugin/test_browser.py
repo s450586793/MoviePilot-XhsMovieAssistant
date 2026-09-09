@@ -812,6 +812,21 @@ def test_check_login_fails_closed_without_state_or_login_dom(
     assert result.should_pause is False
 
 
+def test_check_login_reports_page_action_failure_as_temporary(
+    manager, fake_playwright, monkeypatch
+) -> None:
+    def fail_navigation(*args, **kwargs):
+        raise RuntimeError("secret upstream response")
+
+    monkeypatch.setattr(fake_playwright.page, "goto", fail_navigation)
+
+    result = manager.check_login()
+
+    assert result.success is False
+    assert result.code == "TEMPORARY_FAILURE"
+    assert "secret upstream response" not in result.message
+
+
 def test_check_login_fails_closed_with_only_hidden_login_dom(
     manager, fake_playwright
 ) -> None:

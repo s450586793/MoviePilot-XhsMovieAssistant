@@ -375,8 +375,14 @@ class BrowserManager:
             return self._check_login()
         except BrowserBusyError:
             raise
-        except Exception:
+        except BrowserUnavailableError:
             return _browser_failure()
+        except Exception:
+            return OperationResult(
+                success=False,
+                code="TEMPORARY_FAILURE",
+                message="Browser operation temporarily failed",
+            )
 
     def import_credentials(
         self,
