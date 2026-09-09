@@ -1009,6 +1009,12 @@ def test_note_contract_error_fails_only_that_request_and_continues(tmp_path: Pat
         RequestStatus.FAILED,
         RequestStatus.DRY_RUN_MATCHED,
     ]
+    failed = next(
+        request
+        for request in repository.recent(10)
+        if request.mention_id == "m1"
+    )
+    assert failed.error == "TEMPORARY_FAILURE"
     assert repository.get_runtime_state().browser_state is BrowserState.READY
 
 
@@ -1178,8 +1184,9 @@ def test_note_pause_fails_current_request_and_stops_the_batch(tmp_path: Path) ->
     ]
 
 
-def test_three_consecutive_contract_failures_pause_but_success_resets_count(
+def test_three_consecutive_contract_failures_pause_as_temporary_failure(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     service, repository, xhs, _, _, notifications = build_service(
         tmp_path / "assistant.db"
@@ -1204,8 +1211,34 @@ def test_three_consecutive_contract_failures_pause_but_success_resets_count(
     service.poll_once()
 
     assert repository.get_runtime_state().browser_state is BrowserState.PAUSED
-    assert repository.get_runtime_state().pause_code == "BROWSER_UNAVAILABLE"
+    assert repository.get_runtime_state().pause_code == "TEMPORARY_FAILURE"
     assert xhs.fetch_mentions_calls == 6
+    assert len(notifications) == 1
+    failure_logs = [
+        record.message
+        for record in caplog.records
+        if "stage=fetch_mentions" in record.message
+    ]
+    assert len(failure_logs) == 5
+    assert "attempt=3" in failure_logs[-1]
+    assert "exception=XhsContractError" in failure_logs[-1]
+    assert "one" not in " ".join(failure_logs)
+    assert "two" not in " ".join(failure_logs)
+    assert "three" not in " ".join(failure_logs)
+
+
+def test_browser_unavailable_pauses_immediately(tmp_path: Path) -> None:
+    service, repository, xhs, _, _, notifications = build_service(
+        tmp_path / "assistant.db"
+    )
+    xhs.mention_failures = [XhsPausedError("BROWSER_UNAVAILABLE")]
+
+    service.poll_once()
+
+    runtime = repository.get_runtime_state()
+    assert runtime.browser_state is BrowserState.PAUSED
+    assert runtime.pause_code == "BROWSER_UNAVAILABLE"
+    assert xhs.fetch_mentions_calls == 1
     assert len(notifications) == 1
 
 

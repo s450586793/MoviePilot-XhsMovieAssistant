@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.2.5-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.2.6-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.2.5` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.2.6` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -27,6 +27,7 @@ Emby 入库继续沿用你已有的 MoviePilot 配置。
 - 复用 MoviePilot 当前 AI 配置，不单独保存模型地址、Key 或 Token。
 - 一篇笔记明确推荐多部作品时，在企业微信列出 MoviePilot 候选供编号选择，不自动
   订阅第一部。
+- 待确认列表过滤仅媒体类型相同的低相关搜索结果，避免无关候选淹没真实片名。
 - 按标题、原名、类型、年份和季数进行确定性匹配；结果歧义时要求人工确认。
 - 查询媒体库和已有订阅，避免重复创建。
 - 使用 SQLite 保存请求状态，支持崩溃恢复与幂等处理。
@@ -175,6 +176,7 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 | 登录过期、`LOGGED_OUT` 或 `LOGIN_REQUIRED` | 在电脑浏览器中重新登录，导出并导入新的 Cookie/Storage State。 |
 | `INVALID_CREDENTIALS` | 确认粘贴的是完整 Cookie 请求头，或文件是合法的 Playwright `storageState.json`，并与插件选择的站点一致。 |
 | Chromium 安装失败或缺少系统库 | 按 MoviePilot 部署镜像/宿主机的 Chromium 依赖说明补齐库后，重新点击“安装 Chromium”。不要把浏览器依赖写入插件配置。 |
+| `TEMPORARY_FAILURE` | 通知接口或页面结构连续失败 3 次后监听会暂停；检查 MoviePilot 日志及站点可用性，稍后人工恢复轮询，不要高频重试。 |
 | AI 测试失败或 AI 未启用 | 先在 MoviePilot 系统设置中配置并启用 AI，再使用插件的“测试 AI”确认；插件不保存模型凭据。 |
 | `NEED_CONFIRMATION` 或歧义结果 | 发送企业微信通知中的 `/xhs_pick` 或 `/xhs_confirm` 完整命令；插件页“人工确认”作为备用。不要仅凭相近标题开启真实订阅。 |
 | 浏览器显示 `ERROR` | 查看刚执行操作的错误码；修复 Chromium、登录或站点验证问题后点击“恢复轮询”。 |
@@ -217,7 +219,7 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.2.5` 发布验证：Python `482 passed`，总覆盖率 `87.77%`；Vue
+当前 `v0.2.6` 发布验证：Python `486 passed`，总覆盖率 `87.73%`；Vue
 `26 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 

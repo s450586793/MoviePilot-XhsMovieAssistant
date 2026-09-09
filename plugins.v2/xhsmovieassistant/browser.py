@@ -64,6 +64,10 @@ class BrowserBusyError(RuntimeError):
     """Raised when the current thread tries to re-enter a browser operation."""
 
 
+class BrowserUnavailableError(RuntimeError):
+    """Raised when the plugin's private Chromium process cannot be started."""
+
+
 class SessionStore:
     """Persist one site's normalized Playwright Storage State privately."""
 
@@ -319,14 +323,24 @@ class BrowserManager:
                 self.browser_path.mkdir(parents=True, exist_ok=True)
                 executable = self.executable_path
                 if executable is None:
-                    raise FileNotFoundError("Chromium is not installed")
-                playwright = self._playwright_factory()
+                    raise BrowserUnavailableError("Chromium is not installed")
+                try:
+                    playwright = self._playwright_factory()
+                except Exception as error:
+                    raise BrowserUnavailableError(
+                        "Playwright could not be started"
+                    ) from error
                 chromium = playwright.chromium
-                browser = chromium.launch(
-                    executable_path=executable,
-                    headless=True,
-                    proxy=self.proxy,
-                )
+                try:
+                    browser = chromium.launch(
+                        executable_path=executable,
+                        headless=True,
+                        proxy=self.proxy,
+                    )
+                except Exception as error:
+                    raise BrowserUnavailableError(
+                        "Chromium could not be started"
+                    ) from error
                 context_options: dict[str, Any] = {
                     "viewport": {"width": 1280, "height": 900},
                     "locale": "zh-CN",

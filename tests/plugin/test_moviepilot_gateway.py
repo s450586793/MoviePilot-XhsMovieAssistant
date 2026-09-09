@@ -78,6 +78,27 @@ def test_same_title_different_year_needs_confirmation(gateway: MoviePilotGateway
     ]
 
 
+def test_ambiguous_results_exclude_candidates_matching_only_media_type(
+    gateway: MoviePilotGateway,
+) -> None:
+    gateway.search_results.extend(
+        [
+            media("开庭", 2013, "tv"),
+            media("开庭", 2026, "tv"),
+            media("Night Court", 1984, "tv"),
+            media("Court Sort VR", 2023, "tv"),
+        ]
+    )
+
+    decision = gateway.match(resolution(title="开庭", year=None, media_type="tv"))
+
+    assert decision.reason_code == "AMBIGUOUS_RESULTS"
+    assert [(item.title, item.year) for item in decision.candidates] == [
+        ("开庭", 2013),
+        ("开庭", 2026),
+    ]
+
+
 def test_cross_source_records_for_the_same_work_are_one_match(
     gateway: MoviePilotGateway,
 ) -> None:

@@ -3,7 +3,7 @@
     "name": "小红书影视助手",
     "description": "读取授权账号的评论艾特，复用 MoviePilot AI 识别影视并安全创建订阅。",
     "labels": "订阅,AI,小红书,RedNote",
-    "version": "0.2.5",
+    "version": "0.2.6",
     "icon": "xhsmovieassistant.png",
     "author": "s450586793",
     "level": 1,
@@ -11,6 +11,7 @@
     "v3": false,
     "system_version": ">=2.15.6",
     "history": {
+      "v0.2.6": "过滤 MoviePilot 低相关候选，并区分临时抓取故障与 Chromium 不可用。",
       "v0.2.5": "修复 AI 待确认结果兼容性，并支持多作品笔记通过企业微信编号选择后订阅。",
       "v0.2.4": "企业微信确认改为显式命令，不再接管普通 AI 对话；修复 RedNote 回复成功却误报失败。",
       "v0.2.3": "RedNote 改为在评论和 @ 通知卡片内精确回复，避免帖子评论分页导致回复失败。",

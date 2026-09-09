@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import unicodedata
 from collections.abc import Callable, Collection
 from typing import Any
@@ -46,6 +47,7 @@ _SUBMISSION_STATUSES = {
 }
 _REPLY_PAUSE_CODES = {
     "AUTH_REQUIRED",
+    "BROWSER_UNAVAILABLE",
     "LOGIN_REQUIRED",
     "RATE_LIMITED",
     "SESSION_EXPIRED",
@@ -58,6 +60,8 @@ _REPLYABLE_STATUSES = {
     RequestStatus.NEED_CONFIRMATION,
     RequestStatus.FAILED,
 }
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class AssistantService:
@@ -120,10 +124,15 @@ class AssistantService:
         except XhsPausedError as error:
             self._pause(error.code)
             return []
-        except XhsContractError:
+        except XhsContractError as error:
             self._consecutive_poll_failures += 1
+            _LOGGER.warning(
+                "XHS poll failed: stage=fetch_mentions attempt=%d exception=%s",
+                self._consecutive_poll_failures,
+                type(error).__name__,
+            )
             if self._consecutive_poll_failures >= 3:
-                self._pause("BROWSER_UNAVAILABLE")
+                self._pause("TEMPORARY_FAILURE")
             return []
 
         self._consecutive_poll_failures = 0
@@ -372,7 +381,7 @@ class AssistantService:
             return self._complete(
                 request_id,
                 mention,
-                self._fail(request_id, "BROWSER_UNAVAILABLE"),
+                self._fail(request_id, "TEMPORARY_FAILURE"),
             )
 
         try:

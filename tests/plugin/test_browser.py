@@ -8,7 +8,12 @@ from threading import Event
 
 import pytest
 
-from xhsmovieassistant.browser import BrowserBusyError, BrowserManager, OperationResult
+from xhsmovieassistant.browser import (
+    BrowserBusyError,
+    BrowserManager,
+    BrowserUnavailableError,
+    OperationResult,
+)
 
 
 class FakeLocator:
@@ -857,13 +862,23 @@ def test_session_releases_lock_when_playwright_factory_fails(tmp_path, fake_play
     )
     working = BrowserManager(tmp_path, "rednote", None, lambda: fake_playwright)
 
-    with pytest.raises(RuntimeError, match="launch failed"):
+    with pytest.raises(
+        BrowserUnavailableError, match="Playwright could not be started"
+    ):
         with failing.session():
             pass
     with working.session():
         pass
 
     assert fake_playwright.context_closed is True
+
+
+def test_session_classifies_missing_chromium_as_browser_unavailable(tmp_path) -> None:
+    browser = BrowserManager(tmp_path, "rednote", None, lambda: None)
+
+    with pytest.raises(BrowserUnavailableError):
+        with browser.session():
+            pass
 
 
 def test_logout_clears_context_and_imported_storage_state(manager, fake_playwright) -> None:

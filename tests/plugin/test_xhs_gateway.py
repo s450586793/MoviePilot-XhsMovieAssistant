@@ -4,7 +4,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from xhsmovieassistant.browser import BrowserManager, OperationResult
+from xhsmovieassistant.browser import (
+    BrowserManager,
+    BrowserUnavailableError,
+    OperationResult,
+)
 from xhsmovieassistant.request_builder import build_media_request
 from xhsmovieassistant.xhs import (
     NoteDetail,
@@ -778,6 +782,21 @@ def test_fetch_mentions_enforces_limit_before_opening_browser(
         gateway.fetch_mentions(limit=limit)
 
     assert manager.session_count == 0
+
+
+def test_fetch_mentions_pauses_when_browser_cannot_start() -> None:
+    class UnavailableManager:
+        @contextmanager
+        def session(self):
+            raise BrowserUnavailableError("launch failed")
+            yield
+
+    gateway = XhsGateway(UnavailableManager())
+
+    with pytest.raises(XhsPausedError) as error:
+        gateway.fetch_mentions()
+
+    assert error.value.code == "BROWSER_UNAVAILABLE"
 
 
 def test_fetch_mentions_applies_limit_to_first_page_only(

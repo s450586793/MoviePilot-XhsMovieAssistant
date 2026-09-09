@@ -31,6 +31,7 @@ _MEDIA_SOURCE_PRIORITY = {
     "bangumi": 2,
     "anilist": 3,
 }
+_MIN_CANDIDATE_SCORE = 0.65
 
 
 class MatchDecision(BaseModel):
@@ -154,7 +155,13 @@ class MoviePilotGateway:
         ):
             results.extend(self._search(media_chain, resolution.original_title))
 
-        candidates = self._collapse_candidates(self._candidates(results, resolution))
+        candidates = [
+            candidate
+            for candidate in self._collapse_candidates(
+                self._candidates(results, resolution)
+            )
+            if candidate.score >= _MIN_CANDIDATE_SCORE
+        ]
         if not candidates:
             return MatchDecision(reason_code="NO_MATCH")
 

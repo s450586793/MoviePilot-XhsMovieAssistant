@@ -10,6 +10,7 @@ from time import monotonic
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
+from .browser import BrowserUnavailableError
 from .xhs_contracts import TransientMention, parse_mentions_payload
 
 
@@ -31,6 +32,7 @@ _REPLY_CONFIRM_TIMEOUT_MS = 3_000
 _EVENT_PUMP_MS = 100
 _PAUSE_CODES = {
     "AUTH_REQUIRED",
+    "BROWSER_UNAVAILABLE",
     "LOGIN_REQUIRED",
     "RATE_LIMITED",
     "SESSION_EXPIRED",
@@ -98,6 +100,8 @@ class XhsGateway:
             with self._manager.session() as page:
                 payload = _capture_mentions_payload(self._manager, page)
                 return parse_mentions_payload(payload)[:limit]
+        except BrowserUnavailableError:
+            raise XhsPausedError("BROWSER_UNAVAILABLE") from None
         except (XhsContractError, XhsPausedError):
             raise
         except Exception as error:
@@ -186,6 +190,8 @@ class XhsGateway:
                     canonical_url=canonical_url,
                     note=note,
                 )
+        except BrowserUnavailableError:
+            raise XhsPausedError("BROWSER_UNAVAILABLE") from None
         except (XhsContractError, XhsPausedError):
             raise
         except Exception as error:
@@ -209,6 +215,10 @@ class XhsGateway:
                         self._manager, page, mention, text
                     )
                 return _reply_from_note(self._manager, page, mention, text)
+        except BrowserUnavailableError:
+            return _reply_failure(
+                "BROWSER_UNAVAILABLE", "Browser operation paused"
+            )
         except XhsPausedError as error:
             return _reply_failure(error.code, "Browser operation paused")
         except Exception as error:
@@ -235,6 +245,10 @@ class XhsGateway:
                     code="REPLY_READY",
                     message="Reply controls are ready",
                 )
+        except BrowserUnavailableError:
+            return _reply_failure(
+                "BROWSER_UNAVAILABLE", "Browser operation paused"
+            )
         except XhsPausedError as error:
             return _reply_failure(error.code, "Browser operation paused")
         except Exception as error:
