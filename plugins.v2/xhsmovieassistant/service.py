@@ -61,7 +61,10 @@ _REPLYABLE_STATUSES = {
     RequestStatus.FAILED,
 }
 
-_LOGGER = logging.getLogger(__name__)
+try:
+    from app.log import logger as _LOGGER
+except ImportError:
+    _LOGGER = logging.getLogger(__name__)
 
 
 class AssistantService:
@@ -148,6 +151,12 @@ class AssistantService:
                 results.append(result)
             if self.repository.get_runtime_state().browser_state is BrowserState.PAUSED:
                 break
+        _LOGGER.info(
+            "XHS poll completed: mentions=%d authorized=%d processed=%d",
+            len(mentions),
+            sum(item.sender_user_id in self.authorized_user_ids for item in mentions),
+            len(results),
+        )
         return results
 
     def process_request(

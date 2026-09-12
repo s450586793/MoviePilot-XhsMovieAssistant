@@ -5,7 +5,7 @@
 </p>
 
 [![MoviePilot](https://img.shields.io/badge/MoviePilot-%3E%3D%202.15.6-2f6fed)](https://github.com/jxxghp/MoviePilot)
-[![Version](https://img.shields.io/badge/version-0.2.7-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
+[![Version](https://img.shields.io/badge/version-0.2.8-2d8a56)](https://github.com/s450586793/MoviePilot-XhsMovieAssistant/releases)
 [![License](https://img.shields.io/badge/license-MIT-555555)](LICENSE)
 
 小红书影视助手是一个非官方 MoviePilot V2 社区插件。你在小红书或
@@ -16,7 +16,7 @@ MoviePilot 已配置的 AI 识别电影或电视剧，再通过 MoviePilot 原�
 插件只负责“小红书发现影视 → 交给 MoviePilot”这一段。下载、115、刮削和
 Emby 入库继续沿用你已有的 MoviePilot 配置。
 
-> `v0.2.7` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
+> `v0.2.8` 是公开测试版本。请先长期使用 dry-run 校准识别结果，再打开真实
 > 订阅。真实订阅和小红书公开回复默认均为关闭状态。
 
 ## 功能
@@ -161,6 +161,11 @@ MoviePilot 消息通知 / 可选固定模板评论回复
 
 浏览器状态：`READY` 表示可继续；`PAUSED` 表示风险控制、会话或浏览器问题已暂停轮询；`ERROR` 表示最近一次浏览器操作失败，先检查页面显示的错误码和对应恢复项，再恢复轮询。登录凭据 `PRESENT` 表示插件私有 Storage State 已存在，`MISSING` 表示需要导入；登录状态 `LOGGED_IN` 表示验证成功，`LOGGED_OUT` 表示凭据无效或已清除。活动状态 `IDLE` 表示空闲，`POLL` 表示正在轮询，`START_FAILED` 或 `FAILED` 表示需要查看下方恢复步骤。
 
+插件启用后，MoviePilot 的定时任务列表应始终包含“小红书影视请求轮询”。暂停时该任务
+仍保留，但不会访问小红书；人工恢复后按原间隔继续执行。`READY` 或 `IDLE` 本身不代表
+最近抓取成功，可结合定时任务的下次执行时间和 `XHS poll completed` 日志核实；该日志
+仅记录通知总数、授权账号通知数和本轮处理数，不记录 Cookie、用户 ID 或评论正文。
+
 请求状态：`NEW` 为待处理，`FETCHED` 为已获取，`RESOLVING` 为 AI 正在识别；`NEED_CONFIRMATION` 表示信息不足或有歧义，需要人工确认；`NOT_MEDIA` 表示不是影视请求；`MATCHED` 表示已找到候选；`DRY_RUN_MATCHED` 表示 dry-run 匹配成功；`ALREADY_IN_LIBRARY` 和 `ALREADY_SUBSCRIBED` 表示无需再次订阅；`SUBSCRIBED` 表示已创建订阅；`FAILED` 表示本次失败；`IGNORED` 表示人工忽略。
 
 公开回复状态只在明确启用该可选高风险功能后出现：`PENDING` 表示等待发送；`SENT` 表示公开回复已成功发出；`FAILED` 表示发送失败。RedNote 未返回回复 ID、但页面明确关闭回复编辑器时，也会记录为 `SENT`，不会伪造平台 ID。插件不会自动重试公开回复；`PENDING` 的支持结果可在管理页手动补发。补发前会重新读取通知并严格核对 mention、发起人、评论和笔记 ID，瞬时访问凭据不会写入 SQLite。`SENT` 或 `FAILED` 不会再次补发，避免重复留言。重新处理会开启一次新的处理尝试并重置回复状态，但不会重复创建已存在的订阅。
@@ -219,7 +224,7 @@ python -m compileall -q src plugins.v2 tests
 git diff --check
 ```
 
-当前 `v0.2.7` 发布验证：Python `487 passed`，总覆盖率 `87.74%`；Vue
+当前 `v0.2.8` 发布验证：Python `490 passed`，总覆盖率 `87.95%`；Vue
 `26 passed`，生产构建通过。MoviePilot `v2.15.6` 隔离 import/route smoke 不调用
 真实 MoviePilot Chain，也不代表真实账号或部署环境已经验收。
 

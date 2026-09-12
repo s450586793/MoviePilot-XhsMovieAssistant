@@ -175,7 +175,7 @@ def test_init_plugin_clamps_config_and_requires_authorized_ids(tmp_path, monkeyp
     assert built == []
 
 
-def test_get_service_is_interval_and_hidden_while_paused(tmp_path):
+def test_get_service_is_interval_and_hidden_when_disabled(tmp_path):
     plugin = _plugin(tmp_path)
     runtime_state = SimpleNamespace(browser_state=entrypoint.BrowserState.READY)
     plugin._enabled = True
@@ -186,8 +186,62 @@ def test_get_service_is_interval_and_hidden_while_paused(tmp_path):
     assert len(services) == 1
     assert services[0]["trigger"] == "interval"
     assert services[0]["kwargs"] == {"minutes": 2}
-    runtime_state.browser_state = entrypoint.BrowserState.PAUSED
+    plugin._enabled = False
     assert plugin.get_service() == []
+
+
+@pytest.mark.parametrize(
+    "pause_code", ["AUTH_REQUIRED", "XHS_RISK_CONTROL", "TEMPORARY_FAILURE"]
+)
+def test_poll_schedule_survives_reload_while_paused_and_manual_resume(
+    tmp_path, monkeypatch, pause_code
+):
+    plugin = _plugin(tmp_path)
+    fetches = []
+
+    def fetch_mentions(self, limit=20):
+        fetches.append(limit)
+        return ()
+
+    monkeypatch.setattr(entrypoint.XhsGateway, "fetch_mentions", fetch_mentions)
+    config = {
+        "enabled": True,
+        "authorized_user_ids": "u1",
+        "notifications_enabled": False,
+        "poll_interval_minutes": 10,
+    }
+    plugin.init_plugin(config)
+    plugin._repository.set_runtime_state(
+        entrypoint.BrowserState.PAUSED, pause_code=pause_code
+    )
+
+    try:
+        plugin.init_plugin(config)
+        services = plugin.get_service()
+        assert len(services) == 1
+        assert services[0]["kwargs"] == {"minutes": 10}
+        scheduled_poll = services[0]["func"]
+
+        assert scheduled_poll() is True
+        plugin._worker.join(timeout=1)
+        assert not plugin._worker.is_alive()
+        assert fetches == []
+        runtime = plugin._repository.get_runtime_state()
+        assert runtime.browser_state is entrypoint.BrowserState.PAUSED
+        assert runtime.pause_code == pause_code
+
+        response = plugin.resume(apikey="test-api-token")
+        assert response.success is True
+        assert scheduled_poll() is True
+        plugin._worker.join(timeout=1)
+        assert not plugin._worker.is_alive()
+        assert fetches == [20]
+        assert (
+            plugin._repository.get_runtime_state().browser_state
+            is entrypoint.BrowserState.READY
+        )
+    finally:
+        plugin.stop_service()
 
 
 def test_runtime_does_not_arm_global_wechat_input(

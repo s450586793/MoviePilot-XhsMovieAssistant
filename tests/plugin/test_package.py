@@ -136,6 +136,7 @@ def test_market_metadata_matches_plugin_class() -> None:
     assert item["v2"] is True
     assert item["v3"] is False
     assert item["history"] == {
+        "v0.2.8": "修复暂停期间重载后自动轮询任务丢失，并记录轮询完成计数便于追踪。",
         "v0.2.7": "修正登录验证中的临时页面异常分类，避免误报 Chromium 不可用。",
         "v0.2.6": "过滤 MoviePilot 低相关候选，并区分临时抓取故障与 Chromium 不可用。",
         "v0.2.5": "修复 AI 待确认结果兼容性，并支持多作品笔记通过企业微信编号选择后订阅。",
